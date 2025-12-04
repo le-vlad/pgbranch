@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/le-vlad/pgbranch/internal/postgres"
 	"github.com/le-vlad/pgbranch/internal/storage"
 	"github.com/le-vlad/pgbranch/internal/testutil"
 	"github.com/le-vlad/pgbranch/pkg/config"
@@ -94,7 +95,18 @@ func TestBrancherOperations(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, "main", branch.Name)
 
-		exists, err := storage.SnapshotExists(branch.Snapshot)
+		expectedSnapshotDB := storage.SnapshotDBName(cfg.Database, "main")
+		assert.Equal(t, expectedSnapshotDB, branch.Snapshot)
+
+		snapshotCfg := &config.Config{
+			Database: branch.Snapshot,
+			Host:     cfg.Host,
+			Port:     cfg.Port,
+			User:     cfg.User,
+			Password: cfg.Password,
+		}
+		snapshotClient := postgres.NewClient(snapshotCfg)
+		exists, err := snapshotClient.DatabaseExists()
 		require.NoError(t, err)
 		assert.True(t, exists)
 	})
@@ -254,12 +266,23 @@ func TestDeleteBranch(t *testing.T) {
 	brancher.Metadata.CurrentBranch = "main"
 	brancher.Metadata.Save()
 
+	feature1Branch, _ := brancher.Metadata.GetBranch("feature-1")
+	feature1SnapshotDB := feature1Branch.Snapshot
+
 	err = brancher.DeleteBranch("feature-1", false)
 	require.NoError(t, err)
 
 	assert.False(t, brancher.Metadata.BranchExists("feature-1"))
 
-	exists, err := storage.SnapshotExists("feature-1.dump")
+	snapshotCfg := &config.Config{
+		Database: feature1SnapshotDB,
+		Host:     cfg.Host,
+		Port:     cfg.Port,
+		User:     cfg.User,
+		Password: cfg.Password,
+	}
+	snapshotClient := postgres.NewClient(snapshotCfg)
+	exists, err := snapshotClient.DatabaseExists()
 	require.NoError(t, err)
 	assert.False(t, exists)
 
@@ -302,20 +325,54 @@ func TestUpdateBranch(t *testing.T) {
 	brancher.Metadata.CurrentBranch = "main"
 	brancher.Metadata.Save()
 
-	branch, _ := brancher.Metadata.GetBranch("main")
-	initialSize, err := storage.GetSnapshotSize(branch.Snapshot)
-	require.NoError(t, err)
-
 	err = execSQL(cfg, "INSERT INTO items (name) VALUES ('Item2'), ('Item3'), ('Item4'), ('Item5')")
 	require.NoError(t, err)
 
 	err = brancher.UpdateBranch("main")
 	require.NoError(t, err)
 
-	newSize, err := storage.GetSnapshotSize(branch.Snapshot)
+	branch, _ := brancher.Metadata.GetBranch("main")
+	snapshotCfg := &config.Config{
+		Database: branch.Snapshot,
+		Host:     cfg.Host,
+		Port:     cfg.Port,
+		User:     cfg.User,
+		Password: cfg.Password,
+	}
+	snapshotClient := postgres.NewClient(snapshotCfg)
+	exists, err := snapshotClient.DatabaseExists()
 	require.NoError(t, err)
+	assert.True(t, exists)
 
-	assert.GreaterOrEqual(t, newSize, initialSize)
+	count, err := countRowsInDB(snapshotCfg, "items")
+	require.NoError(t, err)
+	assert.Equal(t, 5, count)
+}
+
+func countRowsInDB(cfg *config.Config, table string) (int, error) {
+	cmd := exec.Command("psql",
+		"-h", cfg.Host,
+		"-p", fmt.Sprintf("%d", cfg.Port),
+		"-U", cfg.User,
+		"-d", cfg.Database,
+		"-tAc", fmt.Sprintf("SELECT COUNT(*) FROM %s", table),
+	)
+
+	if cfg.Password != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("psql error: %w", err)
+	}
+
+	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse count: %w", err)
+	}
+
+	return count, nil
 }
 
 func TestCheckoutNonExistentBranch(t *testing.T) {

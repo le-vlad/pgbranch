@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -77,7 +76,7 @@ func TestClientIntegration(t *testing.T) {
 	})
 }
 
-func TestDumpAndRestoreIntegration(t *testing.T) {
+func TestSnapshotAndRestoreIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -87,10 +86,6 @@ func TestDumpAndRestoreIntegration(t *testing.T) {
 	pg, err := testutil.StartPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer pg.Stop(ctx)
-
-	tmpDir, err := os.MkdirTemp("", "pgbranch-dump-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
 
 	cfg := pg.GetConfig()
 	client := NewClient(cfg)
@@ -109,35 +104,38 @@ func TestDumpAndRestoreIntegration(t *testing.T) {
 	err = execSQL(cfg, setupSQL)
 	require.NoError(t, err)
 
-	t.Run("Dump", func(t *testing.T) {
-		dumpPath := filepath.Join(tmpDir, "test.dump")
+	snapshotDBName := cfg.Database + "_snapshot_test"
 
-		err := client.Dump(dumpPath)
+	t.Run("CreateSnapshot", func(t *testing.T) {
+		err := client.CreateSnapshot(snapshotDBName)
 		require.NoError(t, err)
 
-		info, err := os.Stat(dumpPath)
+		snapshotCfg := &config.Config{
+			Database: snapshotDBName,
+			Host:     cfg.Host,
+			Port:     cfg.Port,
+			User:     cfg.User,
+			Password: cfg.Password,
+		}
+		snapshotClient := NewClient(snapshotCfg)
+		exists, err := snapshotClient.DatabaseExists()
 		require.NoError(t, err)
-		assert.Greater(t, info.Size(), int64(0))
+		assert.True(t, exists)
 	})
 
-	t.Run("RestoreClean", func(t *testing.T) {
-		dumpPath := filepath.Join(tmpDir, "restore_test.dump")
-
-		err := client.Dump(dumpPath)
-		require.NoError(t, err)
-
+	t.Run("RestoreFromSnapshot", func(t *testing.T) {
 		modifySQL := `
 			DELETE FROM users WHERE name = 'Alice';
 			INSERT INTO users (name, email) VALUES ('David', 'david@example.com');
 		`
-		err = execSQL(cfg, modifySQL)
+		err := execSQL(cfg, modifySQL)
 		require.NoError(t, err)
 
 		count, err := countRows(cfg, "users")
 		require.NoError(t, err)
 		assert.Equal(t, 3, count)
 
-		err = client.RestoreClean(dumpPath)
+		err = client.RestoreFromSnapshot(snapshotDBName)
 		require.NoError(t, err)
 
 		count, err = countRows(cfg, "users")
@@ -152,9 +150,26 @@ func TestDumpAndRestoreIntegration(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, exists)
 	})
+
+	t.Run("DeleteSnapshot", func(t *testing.T) {
+		err := client.DeleteSnapshot(snapshotDBName)
+		require.NoError(t, err)
+
+		snapshotCfg := &config.Config{
+			Database: snapshotDBName,
+			Host:     cfg.Host,
+			Port:     cfg.Port,
+			User:     cfg.User,
+			Password: cfg.Password,
+		}
+		snapshotClient := NewClient(snapshotCfg)
+		exists, err := snapshotClient.DatabaseExists()
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
 }
 
-func TestDumpToPathAndRestoreFromPath(t *testing.T) {
+func TestCreateSnapshotDBAndRestoreFromSnapshotDB(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -164,10 +179,6 @@ func TestDumpToPathAndRestoreFromPath(t *testing.T) {
 	pg, err := testutil.StartPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer pg.Stop(ctx)
-
-	tmpDir, err := os.MkdirTemp("", "pgbranch-helper-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
 
 	cfg := pg.GetConfig()
 
@@ -184,13 +195,22 @@ func TestDumpToPathAndRestoreFromPath(t *testing.T) {
 	err = execSQL(cfg, setupSQL)
 	require.NoError(t, err)
 
-	dumpPath := filepath.Join(tmpDir, "helper_test.dump")
+	snapshotDBName := cfg.Database + "_helper_test_snapshot"
 
-	err = DumpToPath(cfg, dumpPath)
+	err = CreateSnapshotDB(cfg, snapshotDBName)
 	require.NoError(t, err)
 
-	_, err = os.Stat(dumpPath)
+	snapshotCfg := &config.Config{
+		Database: snapshotDBName,
+		Host:     cfg.Host,
+		Port:     cfg.Port,
+		User:     cfg.User,
+		Password: cfg.Password,
+	}
+	snapshotClient := NewClient(snapshotCfg)
+	exists, err := snapshotClient.DatabaseExists()
 	require.NoError(t, err)
+	assert.True(t, exists)
 
 	err = execSQL(cfg, "DELETE FROM products")
 	require.NoError(t, err)
@@ -199,12 +219,15 @@ func TestDumpToPathAndRestoreFromPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
 
-	err = RestoreFromPath(cfg, dumpPath)
+	err = RestoreFromSnapshotDB(cfg, snapshotDBName)
 	require.NoError(t, err)
 
 	count, err = countRows(cfg, "products")
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
+
+	err = DeleteSnapshotDB(cfg, snapshotDBName)
+	require.NoError(t, err)
 }
 
 func execSQL(cfg *config.Config, sql string) error {

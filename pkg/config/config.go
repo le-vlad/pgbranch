@@ -123,3 +123,7 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+func EnsureDir(path string) error {
+	return os.MkdirAll(path, 0755)
+}

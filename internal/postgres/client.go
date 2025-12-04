@@ -135,3 +135,71 @@ func (c *Client) TestConnection() error {
 	}
 	return nil
 }
+
+func (c *Client) CreateDatabaseFromTemplate(templateDB, newDB string) error {
+	c.TerminateConnectionsTo(templateDB)
+
+	query := fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s", newDB, templateDB)
+	cmd := exec.Command("psql",
+		"-h", c.Config.Host,
+		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-U", c.Config.User,
+		"-d", "postgres",
+		"-c", query,
+	)
+
+	if c.Config.Password != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create database from template: %s", string(output))
+	}
+	return nil
+}
+
+func (c *Client) TerminateConnectionsTo(dbName string) error {
+	query := fmt.Sprintf(`
+		SELECT pg_terminate_backend(pid)
+		FROM pg_stat_activity
+		WHERE datname = '%s' AND pid <> pg_backend_pid()
+	`, dbName)
+
+	cmd := exec.Command("psql",
+		"-h", c.Config.Host,
+		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-U", c.Config.User,
+		"-d", "postgres",
+		"-c", query,
+	)
+
+	if c.Config.Password != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+	}
+
+	_, _ = cmd.CombinedOutput()
+	return nil
+}
+
+func (c *Client) DropDatabaseByName(dbName string) error {
+	c.TerminateConnectionsTo(dbName)
+
+	cmd := exec.Command("psql",
+		"-h", c.Config.Host,
+		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-U", c.Config.User,
+		"-d", "postgres",
+		"-c", fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName),
+	)
+
+	if c.Config.Password != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to drop database: %s", string(output))
+	}
+	return nil
+}

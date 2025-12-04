@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/le-vlad/pgbranch/internal/core"
-	"github.com/le-vlad/pgbranch/internal/storage"
 )
 
 var logCmd = &cobra.Command{
@@ -50,38 +49,16 @@ func runLog(cmd *cobra.Command, args []string) error {
 
 		fmt.Printf("%s%s\n", prefix, name)
 
-		fmt.Printf("    Created: %s\n", dim(info.Branch.CreatedAt.Format("2006-01-02 15:04:05")))
+		fmt.Printf("    Created:  %s\n", dim(info.Branch.CreatedAt.Format("2006-01-02 15:04:05")))
 
 		if info.Branch.Parent != "" {
-			fmt.Printf("    Parent:  %s\n", yellow(info.Branch.Parent))
+			fmt.Printf("    Parent:   %s\n", yellow(info.Branch.Parent))
 		}
 
-		size, err := storage.GetSnapshotSize(info.Branch.Snapshot)
-		if err == nil {
-			fmt.Printf("    Size:    %s\n", dim(formatBytes(size)))
-		}
+		fmt.Printf("    Snapshot: %s\n", dim(info.Branch.Snapshot))
 
 		fmt.Println()
 	}
 
 	return nil
-}
-
-func formatBytes(bytes int64) string {
-	const (
-		KB = 1024
-		MB = KB * 1024
-		GB = MB * 1024
-	)
-
-	switch {
-	case bytes >= GB:
-		return fmt.Sprintf("%.2f GB", float64(bytes)/GB)
-	case bytes >= MB:
-		return fmt.Sprintf("%.2f MB", float64(bytes)/MB)
-	case bytes >= KB:
-		return fmt.Sprintf("%.2f KB", float64(bytes)/KB)
-	default:
-		return fmt.Sprintf("%d B", bytes)
-	}
 }

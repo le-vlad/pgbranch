@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/le-vlad/pgbranch/internal/postgres"
@@ -44,12 +43,8 @@ func Initialize(database, host string, port int, user, password string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(rootDir, 0755); err != nil {
+	if err := config.EnsureDir(rootDir); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	if err := storage.EnsureSnapshotsDir(); err != nil {
-		return fmt.Errorf("failed to create snapshots directory: %w", err)
 	}
 
 	cfg := config.DefaultConfig()
@@ -86,21 +81,20 @@ func (b *Brancher) CreateBranch(name string) error {
 		return fmt.Errorf("branch '%s' already exists", name)
 	}
 
-	snapshotFile := storage.SnapshotFilename(name)
-	snapshotPath, err := storage.GetSnapshotPath(snapshotFile)
-	if err != nil {
-		return err
-	}
+	// Generate snapshot database name
+	snapshotDBName := storage.SnapshotDBName(b.Config.Database, name)
 
-	if err := b.Client.Dump(snapshotPath); err != nil {
+	// Create snapshot database from the current database
+	if err := b.Client.CreateSnapshot(snapshotDBName); err != nil {
 		return fmt.Errorf("failed to create snapshot: %w", err)
 	}
 
 	parent := b.Metadata.CurrentBranch
-	b.Metadata.AddBranch(name, parent, snapshotFile)
+	b.Metadata.AddBranch(name, parent, snapshotDBName)
 
 	if err := b.Metadata.Save(); err != nil {
-		os.Remove(snapshotPath)
+		// Cleanup: drop the snapshot database on failure
+		b.Client.DeleteSnapshot(snapshotDBName)
 		return fmt.Errorf("failed to save metadata: %w", err)
 	}
 
@@ -113,20 +107,11 @@ func (b *Brancher) Checkout(name string) error {
 		return fmt.Errorf("branch '%s' does not exist", name)
 	}
 
-	snapshotPath, err := storage.GetSnapshotPath(branch.Snapshot)
-	if err != nil {
-		return err
-	}
+	// branch.Snapshot now contains the snapshot database name
+	snapshotDBName := branch.Snapshot
 
-	exists, err := storage.SnapshotExists(branch.Snapshot)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("snapshot file not found for branch '%s'", name)
-	}
-
-	if err := b.Client.RestoreClean(snapshotPath); err != nil {
+	// Restore the database from the snapshot
+	if err := b.Client.RestoreFromSnapshot(snapshotDBName); err != nil {
 		return fmt.Errorf("failed to restore branch: %w", err)
 	}
 
@@ -148,8 +133,9 @@ func (b *Brancher) DeleteBranch(name string, force bool) error {
 		return fmt.Errorf("branch '%s' does not exist", name)
 	}
 
-	if err := storage.DeleteSnapshot(branch.Snapshot); err != nil {
-		return fmt.Errorf("failed to delete snapshot: %w", err)
+	// Delete the snapshot database
+	if err := b.Client.DeleteSnapshot(branch.Snapshot); err != nil {
+		return fmt.Errorf("failed to delete snapshot database: %w", err)
 	}
 
 	if err := b.Metadata.DeleteBranch(name); err != nil {
@@ -205,13 +191,14 @@ func (b *Brancher) UpdateBranch(name string) error {
 		return fmt.Errorf("branch '%s' does not exist", name)
 	}
 
-	snapshotPath, err := storage.GetSnapshotPath(branch.Snapshot)
-	if err != nil {
-		return err
+	snapshotDBName := branch.Snapshot
+
+	if err := b.Client.DeleteSnapshot(snapshotDBName); err != nil {
+		return fmt.Errorf("failed to delete old snapshot: %w", err)
 	}
 
-	if err := b.Client.Dump(snapshotPath); err != nil {
-		return fmt.Errorf("failed to update snapshot: %w", err)
+	if err := b.Client.CreateSnapshot(snapshotDBName); err != nil {
+		return fmt.Errorf("failed to create updated snapshot: %w", err)
 	}
 
 	return nil
