@@ -56,7 +56,6 @@ func runLog(cmd *cobra.Command, args []string) error {
 			fmt.Printf("    Parent:  %s\n", yellow(info.Branch.Parent))
 		}
 
-		// Snapshot size
 		size, err := storage.GetSnapshotSize(info.Branch.Snapshot)
 		if err == nil {
 			fmt.Printf("    Size:    %s\n", dim(formatBytes(size)))

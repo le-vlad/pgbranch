@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 
 	"github.com/le-vlad/pgbranch/pkg/config"
@@ -19,7 +20,7 @@ func (c *Client) Restore(inputPath string) error {
 	)
 
 	if c.Config.Password != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
 	}
 
 	output, err := cmd.CombinedOutput()

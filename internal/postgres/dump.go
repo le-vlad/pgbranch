@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 
 	"github.com/le-vlad/pgbranch/pkg/config"
@@ -13,12 +14,12 @@ func (c *Client) Dump(outputPath string) error {
 		"-p", fmt.Sprintf("%d", c.Config.Port),
 		"-U", c.Config.User,
 		"-d", c.Config.Database,
-		"-Fc", // Custom format
+		"-Fc",
 		"-f", outputPath,
 	)
 
 	if c.Config.Password != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
 	}
 
 	output, err := cmd.CombinedOutput()
