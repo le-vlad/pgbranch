@@ -1,6 +1,6 @@
 module github.com/le-vlad/pgbranch
 
-go 1.25.0
+go 1.25
 
 require (
 	github.com/fatih/color v1.18.0
