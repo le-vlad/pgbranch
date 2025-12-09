@@ -38,10 +38,17 @@ if [ ! -d ".pgbranch" ]; then
 fi
 
 # Check if this branch exists in pgbranch
-if pgbranch status 2>/dev/null | grep -q "Current branch:"; then
-    # Try to checkout the branch, but don't fail if it doesn't exist
-    if pgbranch checkout "$BRANCH" 2>/dev/null; then
-        echo "pgbranch: Switched database to branch '$BRANCH'"
+if pgbranch branch 2>/dev/null | grep -q "^[* ] $BRANCH$"; then
+    # Branch exists, checkout if not already current
+    if ! pgbranch branch 2>/dev/null | grep -q "^\* $BRANCH$"; then
+        if pgbranch checkout "$BRANCH" 2>/dev/null; then
+            echo "pgbranch: Switched database to branch '$BRANCH'"
+        fi
+    fi
+else
+    # Branch doesn't exist, create it
+    if pgbranch branch "$BRANCH" 2>/dev/null; then
+        echo "pgbranch: Created database branch '$BRANCH'"
     fi
 fi
 `
