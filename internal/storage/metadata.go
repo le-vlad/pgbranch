@@ -13,10 +13,33 @@ import (
 const MetadataFileName = "metadata.json"
 
 type Branch struct {
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	Parent    string    `json:"parent,omitempty"`
-	Snapshot  string    `json:"snapshot"`
+	Name           string    `json:"name"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastCheckoutAt time.Time `json:"last_checkout_at,omitempty"`
+	Parent         string    `json:"parent,omitempty"`
+	Snapshot       string    `json:"snapshot"`
+}
+
+func (b *Branch) IsStale(staleDays int) bool {
+	threshold := time.Now().AddDate(0, 0, -staleDays)
+
+	// If never checked out, use CreatedAt
+	if b.LastCheckoutAt.IsZero() {
+		return b.CreatedAt.Before(threshold)
+	}
+
+	return b.LastCheckoutAt.Before(threshold)
+}
+
+func (b *Branch) DaysSinceLastAccess() int {
+	var lastAccess time.Time
+	if b.LastCheckoutAt.IsZero() {
+		lastAccess = b.CreatedAt
+	} else {
+		lastAccess = b.LastCheckoutAt
+	}
+
+	return int(time.Since(lastAccess).Hours() / 24)
 }
 
 type Metadata struct {
@@ -125,5 +148,24 @@ func (m *Metadata) SetCurrentBranch(name string) error {
 		return fmt.Errorf("branch '%s' does not exist", name)
 	}
 	m.CurrentBranch = name
+	return nil
+}
+
+func (m *Metadata) GetStaleBranches(staleDays int) []*Branch {
+	var stale []*Branch
+	for _, branch := range m.Branches {
+		if branch.IsStale(staleDays) {
+			stale = append(stale, branch)
+		}
+	}
+	return stale
+}
+
+func (m *Metadata) UpdateLastCheckout(name string) error {
+	branch, ok := m.Branches[name]
+	if !ok {
+		return fmt.Errorf("branch '%s' does not exist", name)
+	}
+	branch.LastCheckoutAt = time.Now()
 	return nil
 }

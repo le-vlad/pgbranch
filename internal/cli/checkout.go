@@ -9,6 +9,24 @@ import (
 	"github.com/le-vlad/pgbranch/internal/core"
 )
 
+func showStaleWarning(brancher *core.Brancher) {
+	staleBranches := brancher.GetStaleBranches(core.DefaultStaleDays)
+	if len(staleBranches) == 0 {
+		return
+	}
+
+	yellow := color.New(color.FgYellow, color.Bold).SprintFunc()
+	orange := color.New(color.FgHiYellow).SprintFunc()
+
+	fmt.Println()
+	fmt.Printf("%s You have %s stale branch(es) not accessed in %d+ days.\n",
+		yellow("!"),
+		orange(fmt.Sprintf("%d", len(staleBranches))),
+		core.DefaultStaleDays,
+	)
+	fmt.Printf("  Run '%s' to clean up stale database clones.\n", orange("pgbranch prune"))
+}
+
 var checkoutCmd = &cobra.Command{
 	Use:   "checkout <branch>",
 	Short: "Switch to a different branch",
@@ -50,6 +68,8 @@ func runCheckout(cmd *cobra.Command, args []string) error {
 
 	green := color.New(color.FgGreen).SprintFunc()
 	fmt.Printf("%s Switched to branch '%s'\n", green("✓"), name)
+
+	showStaleWarning(brancher)
 
 	return nil
 }

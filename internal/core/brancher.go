@@ -81,10 +81,8 @@ func (b *Brancher) CreateBranch(name string) error {
 		return fmt.Errorf("branch '%s' already exists", name)
 	}
 
-	// Generate snapshot database name
 	snapshotDBName := storage.SnapshotDBName(b.Config.Database, name)
 
-	// Create snapshot database from the current database
 	if err := b.Client.CreateSnapshot(snapshotDBName); err != nil {
 		return fmt.Errorf("failed to create snapshot: %w", err)
 	}
@@ -93,7 +91,6 @@ func (b *Brancher) CreateBranch(name string) error {
 	b.Metadata.AddBranch(name, parent, snapshotDBName)
 
 	if err := b.Metadata.Save(); err != nil {
-		// Cleanup: drop the snapshot database on failure
 		b.Client.DeleteSnapshot(snapshotDBName)
 		return fmt.Errorf("failed to save metadata: %w", err)
 	}
@@ -107,15 +104,18 @@ func (b *Brancher) Checkout(name string) error {
 		return fmt.Errorf("branch '%s' does not exist", name)
 	}
 
-	// branch.Snapshot now contains the snapshot database name
 	snapshotDBName := branch.Snapshot
 
-	// Restore the database from the snapshot
 	if err := b.Client.RestoreFromSnapshot(snapshotDBName); err != nil {
 		return fmt.Errorf("failed to restore branch: %w", err)
 	}
 
 	b.Metadata.CurrentBranch = name
+
+	if err := b.Metadata.UpdateLastCheckout(name); err != nil {
+		return fmt.Errorf("failed to update last checkout time: %w", err)
+	}
+
 	if err := b.Metadata.Save(); err != nil {
 		return fmt.Errorf("failed to update metadata: %w", err)
 	}
@@ -133,7 +133,6 @@ func (b *Brancher) DeleteBranch(name string, force bool) error {
 		return fmt.Errorf("branch '%s' does not exist", name)
 	}
 
-	// Delete the snapshot database
 	if err := b.Client.DeleteSnapshot(branch.Snapshot); err != nil {
 		return fmt.Errorf("failed to delete snapshot database: %w", err)
 	}
@@ -202,4 +201,36 @@ func (b *Brancher) UpdateBranch(name string) error {
 	}
 
 	return nil
+}
+
+const DefaultStaleDays = 7
+
+func (b *Brancher) GetStaleBranches(staleDays int) []BranchInfo {
+	staleBranches := b.Metadata.GetStaleBranches(staleDays)
+	result := make([]BranchInfo, 0, len(staleBranches))
+
+	for _, branch := range staleBranches {
+		result = append(result, BranchInfo{
+			Name:      branch.Name,
+			IsCurrent: branch.Name == b.Metadata.CurrentBranch,
+			Branch:    branch,
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Branch.DaysSinceLastAccess() > result[j].Branch.DaysSinceLastAccess()
+	})
+
+	return result
+}
+
+func (b *Brancher) PruneBranches(names []string) (deleted []string, errors []error) {
+	for _, name := range names {
+		if err := b.DeleteBranch(name, true); err != nil {
+			errors = append(errors, fmt.Errorf("failed to delete '%s': %w", name, err))
+		} else {
+			deleted = append(deleted, name)
+		}
+	}
+	return deleted, errors
 }
