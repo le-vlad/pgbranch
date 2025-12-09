@@ -13,12 +13,31 @@ const (
 	SnapshotsDir   = "snapshots"
 )
 
+// RemoteConfig holds configuration for a remote storage backend
+type RemoteConfig struct {
+	// Name is the name of this remote (e.g., "origin")
+	Name string `json:"name"`
+
+	// Type is the remote type (fs, s3, gcs)
+	Type string `json:"type"`
+
+	// URL is the remote URL
+	URL string `json:"url"`
+
+	// Options contains type-specific options
+	Options map[string]string `json:"options,omitempty"`
+}
+
 type Config struct {
 	Database string `json:"database"`
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
 	User     string `json:"user"`
 	Password string `json:"password,omitempty"`
+
+	Remotes map[string]*RemoteConfig `json:"remotes,omitempty"`
+
+	DefaultRemote string `json:"default_remote,omitempty"`
 }
 
 func DefaultConfig() *Config {
@@ -135,4 +154,79 @@ func (c *Config) Validate() error {
 
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
+}
+
+func (c *Config) AddRemote(remote *RemoteConfig) error {
+	if remote.Name == "" {
+		return fmt.Errorf("remote name is required")
+	}
+	if c.Remotes == nil {
+		c.Remotes = make(map[string]*RemoteConfig)
+	}
+	if _, exists := c.Remotes[remote.Name]; exists {
+		return fmt.Errorf("remote '%s' already exists", remote.Name)
+	}
+	c.Remotes[remote.Name] = remote
+
+	if c.DefaultRemote == "" {
+		c.DefaultRemote = remote.Name
+	}
+
+	return nil
+}
+
+func (c *Config) RemoveRemote(name string) error {
+	if c.Remotes == nil {
+		return fmt.Errorf("remote '%s' not found", name)
+	}
+	if _, exists := c.Remotes[name]; !exists {
+		return fmt.Errorf("remote '%s' not found", name)
+	}
+	delete(c.Remotes, name)
+
+	if c.DefaultRemote == name {
+		c.DefaultRemote = ""
+		for remoteName := range c.Remotes {
+			c.DefaultRemote = remoteName
+			break
+		}
+	}
+
+	return nil
+}
+
+func (c *Config) GetRemote(name string) (*RemoteConfig, error) {
+	if name == "" {
+		name = c.DefaultRemote
+	}
+	if name == "" {
+		return nil, fmt.Errorf("no remote specified and no default remote configured")
+	}
+	if c.Remotes == nil {
+		return nil, fmt.Errorf("remote '%s' not found", name)
+	}
+	remote, exists := c.Remotes[name]
+	if !exists {
+		return nil, fmt.Errorf("remote '%s' not found", name)
+	}
+	return remote, nil
+}
+
+func (c *Config) ListRemotes() []*RemoteConfig {
+	if c.Remotes == nil {
+		return nil
+	}
+	remotes := make([]*RemoteConfig, 0, len(c.Remotes))
+	for _, remote := range c.Remotes {
+		remotes = append(remotes, remote)
+	}
+	return remotes
+}
+
+func (c *Config) SetDefaultRemote(name string) error {
+	if c.Remotes == nil || c.Remotes[name] == nil {
+		return fmt.Errorf("remote '%s' not found", name)
+	}
+	c.DefaultRemote = name
+	return nil
 }
