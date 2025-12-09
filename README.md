@@ -72,6 +72,8 @@ pgbranch checkout <name>       Switch to a branch
 pgbranch delete <name>         Delete a branch
 pgbranch status                Show current branch and info
 pgbranch log                   Show all branches with details
+pgbranch hook install          Install git hook for auto-switching
+pgbranch hook uninstall        Remove the git hook
 ```
 
 ### Init Options
@@ -94,6 +96,22 @@ pgbranch log                   Show all branches with details
 When you run `pgbranch branch feature-x` on a database called `myapp_dev`, it creates a new database called `myapp_dev_pgbranch_feature_x`. That's your snapshot.
 
 Your working database stays as `myapp_dev`. When you checkout, it gets replaced with a copy of the snapshot.
+
+## Automatic Branch Switching
+
+Tired of manually running `pgbranch checkout` every time you switch git branches? Install the git hook:
+
+```bash
+pgbranch hook install
+```
+
+Now whenever you run `git checkout feature-x`, pgbranch will automatically switch your database to the `feature-x` branch (if it exists).
+
+To remove the hook:
+
+```bash
+pgbranch hook uninstall
+```
 
 ## Caveats
 

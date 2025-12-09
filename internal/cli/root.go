@@ -36,4 +36,5 @@ func init() {
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(logCmd)
+	rootCmd.AddCommand(hookCmd)
 }
