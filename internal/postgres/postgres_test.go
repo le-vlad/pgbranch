@@ -2,13 +2,9 @@ package postgres
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -101,7 +97,7 @@ func TestSnapshotAndRestoreIntegration(t *testing.T) {
 			('Bob', 'bob@example.com'),
 			('Charlie', 'charlie@example.com');
 	`
-	err = execSQL(cfg, setupSQL)
+	err = execSQL(ctx, cfg, setupSQL)
 	require.NoError(t, err)
 
 	snapshotDBName := cfg.Database + "_snapshot_test"
@@ -128,25 +124,25 @@ func TestSnapshotAndRestoreIntegration(t *testing.T) {
 			DELETE FROM users WHERE name = 'Alice';
 			INSERT INTO users (name, email) VALUES ('David', 'david@example.com');
 		`
-		err := execSQL(cfg, modifySQL)
+		err := execSQL(ctx, cfg, modifySQL)
 		require.NoError(t, err)
 
-		count, err := countRows(cfg, "users")
+		count, err := countRows(ctx, cfg, "users")
 		require.NoError(t, err)
 		assert.Equal(t, 3, count)
 
 		err = client.RestoreFromSnapshot(snapshotDBName)
 		require.NoError(t, err)
 
-		count, err = countRows(cfg, "users")
+		count, err = countRows(ctx, cfg, "users")
 		require.NoError(t, err)
 		assert.Equal(t, 3, count)
 
-		exists, err := rowExists(cfg, "users", "name", "Alice")
+		exists, err := rowExists(ctx, cfg, "users", "name", "Alice")
 		require.NoError(t, err)
 		assert.True(t, exists)
 
-		exists, err = rowExists(cfg, "users", "name", "David")
+		exists, err = rowExists(ctx, cfg, "users", "name", "David")
 		require.NoError(t, err)
 		assert.False(t, exists)
 	})
@@ -192,7 +188,7 @@ func TestCreateSnapshotDBAndRestoreFromSnapshotDB(t *testing.T) {
 			('Widget', 9.99),
 			('Gadget', 19.99);
 	`
-	err = execSQL(cfg, setupSQL)
+	err = execSQL(ctx, cfg, setupSQL)
 	require.NoError(t, err)
 
 	snapshotDBName := cfg.Database + "_helper_test_snapshot"
@@ -212,17 +208,17 @@ func TestCreateSnapshotDBAndRestoreFromSnapshotDB(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	err = execSQL(cfg, "DELETE FROM products")
+	err = execSQL(ctx, cfg, "DELETE FROM products")
 	require.NoError(t, err)
 
-	count, err := countRows(cfg, "products")
+	count, err := countRows(ctx, cfg, "products")
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
 
 	err = RestoreFromSnapshotDB(cfg, snapshotDBName)
 	require.NoError(t, err)
 
-	count, err = countRows(cfg, "products")
+	count, err = countRows(ctx, cfg, "products")
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 
@@ -230,69 +226,46 @@ func TestCreateSnapshotDBAndRestoreFromSnapshotDB(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func execSQL(cfg *config.Config, sql string) error {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-c", sql,
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.CombinedOutput()
+func execSQL(ctx context.Context, cfg *config.Config, sql string) error {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return fmt.Errorf("psql error: %s, output: %s", err, string(output))
+		return err
 	}
-	return nil
+	defer conn.Close(ctx)
+
+	_, err = conn.Exec(ctx, sql)
+	return err
 }
 
-func countRows(cfg *config.Config, table string) (int, error) {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-tAc", fmt.Sprintf("SELECT COUNT(*) FROM %s", table),
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.Output()
+func countRows(ctx context.Context, cfg *config.Config, table string) (int, error) {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return 0, fmt.Errorf("psql error: %w", err)
+		return 0, err
 	}
+	defer conn.Close(ctx)
 
-	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	var count int
+	err = conn.QueryRow(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse count: %w", err)
+		return 0, err
 	}
 
 	return count, nil
 }
 
-func rowExists(cfg *config.Config, table, column, value string) (bool, error) {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-tAc", fmt.Sprintf("SELECT 1 FROM %s WHERE %s = '%s' LIMIT 1", table, column, value),
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.Output()
+func rowExists(ctx context.Context, cfg *config.Config, table, column, value string) (bool, error) {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return false, fmt.Errorf("psql error: %w", err)
+		return false, err
+	}
+	defer conn.Close(ctx)
+
+	var exists bool
+	query := "SELECT EXISTS(SELECT 1 FROM " + table + " WHERE " + column + " = $1)"
+	err = conn.QueryRow(ctx, query, value).Scan(&exists)
+	if err != nil {
+		return false, err
 	}
 
-	return strings.TrimSpace(string(output)) == "1", nil
+	return exists, nil
 }

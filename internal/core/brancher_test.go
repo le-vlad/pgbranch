@@ -2,13 +2,9 @@ package core
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -81,7 +77,7 @@ func TestBrancherOperations(t *testing.T) {
 			('Alice', 'alice@example.com'),
 			('Bob', 'bob@example.com');
 	`
-	err = execSQL(cfg, setupSQL)
+	err = execSQL(ctx, cfg, setupSQL)
 	require.NoError(t, err)
 
 	brancher, err := NewBrancher()
@@ -177,7 +173,7 @@ func TestCheckoutWorkflow(t *testing.T) {
 			('Widget', 9.99),
 			('Gadget', 19.99);
 	`
-	err = execSQL(cfg, setupSQL)
+	err = execSQL(ctx, cfg, setupSQL)
 	require.NoError(t, err)
 
 	brancher, err := NewBrancher()
@@ -188,7 +184,7 @@ func TestCheckoutWorkflow(t *testing.T) {
 	brancher.Metadata.CurrentBranch = "main"
 	brancher.Metadata.Save()
 
-	count, err := countRows(cfg, "products")
+	count, err := countRows(ctx, cfg, "products")
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 
@@ -197,18 +193,18 @@ func TestCheckoutWorkflow(t *testing.T) {
 		INSERT INTO products (name, price) VALUES ('SuperWidget', 29.99);
 		UPDATE products SET price = 24.99 WHERE name = 'Gadget';
 	`
-	err = execSQL(cfg, modifySQL)
+	err = execSQL(ctx, cfg, modifySQL)
 	require.NoError(t, err)
 
-	count, err = countRows(cfg, "products")
+	count, err = countRows(ctx, cfg, "products")
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 
-	exists, err := rowExists(cfg, "products", "name", "Widget")
+	exists, err := rowExists(ctx, cfg, "products", "name", "Widget")
 	require.NoError(t, err)
 	assert.False(t, exists)
 
-	exists, err = rowExists(cfg, "products", "name", "SuperWidget")
+	exists, err = rowExists(ctx, cfg, "products", "name", "SuperWidget")
 	require.NoError(t, err)
 	assert.True(t, exists)
 
@@ -217,19 +213,19 @@ func TestCheckoutWorkflow(t *testing.T) {
 
 	assert.Equal(t, "main", brancher.Metadata.CurrentBranch)
 
-	count, err = countRows(cfg, "products")
+	count, err = countRows(ctx, cfg, "products")
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 
-	exists, err = rowExists(cfg, "products", "name", "Widget")
+	exists, err = rowExists(ctx, cfg, "products", "name", "Widget")
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	exists, err = rowExists(cfg, "products", "name", "SuperWidget")
+	exists, err = rowExists(ctx, cfg, "products", "name", "SuperWidget")
 	require.NoError(t, err)
 	assert.False(t, exists)
 
-	price, err := getProductPrice(cfg, "Gadget")
+	price, err := getProductPrice(ctx, cfg, "Gadget")
 	require.NoError(t, err)
 	assert.Equal(t, "19.99", price)
 }
@@ -253,7 +249,7 @@ func TestDeleteBranch(t *testing.T) {
 	err = Initialize(cfg.Database, cfg.Host, cfg.Port, cfg.User, cfg.Password)
 	require.NoError(t, err)
 
-	err = execSQL(cfg, "CREATE TABLE test (id SERIAL PRIMARY KEY)")
+	err = execSQL(ctx, cfg, "CREATE TABLE test (id SERIAL PRIMARY KEY)")
 	require.NoError(t, err)
 
 	brancher, err := NewBrancher()
@@ -314,7 +310,7 @@ func TestUpdateBranch(t *testing.T) {
 	err = Initialize(cfg.Database, cfg.Host, cfg.Port, cfg.User, cfg.Password)
 	require.NoError(t, err)
 
-	err = execSQL(cfg, "CREATE TABLE items (id SERIAL PRIMARY KEY, name VARCHAR(100)); INSERT INTO items (name) VALUES ('Item1')")
+	err = execSQL(ctx, cfg, "CREATE TABLE items (id SERIAL PRIMARY KEY, name VARCHAR(100)); INSERT INTO items (name) VALUES ('Item1')")
 	require.NoError(t, err)
 
 	brancher, err := NewBrancher()
@@ -325,7 +321,7 @@ func TestUpdateBranch(t *testing.T) {
 	brancher.Metadata.CurrentBranch = "main"
 	brancher.Metadata.Save()
 
-	err = execSQL(cfg, "INSERT INTO items (name) VALUES ('Item2'), ('Item3'), ('Item4'), ('Item5')")
+	err = execSQL(ctx, cfg, "INSERT INTO items (name) VALUES ('Item2'), ('Item3'), ('Item4'), ('Item5')")
 	require.NoError(t, err)
 
 	err = brancher.UpdateBranch("main")
@@ -344,32 +340,22 @@ func TestUpdateBranch(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	count, err := countRowsInDB(snapshotCfg, "items")
+	count, err := countRowsInDB(ctx, snapshotCfg, "items")
 	require.NoError(t, err)
 	assert.Equal(t, 5, count)
 }
 
-func countRowsInDB(cfg *config.Config, table string) (int, error) {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-tAc", fmt.Sprintf("SELECT COUNT(*) FROM %s", table),
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.Output()
+func countRowsInDB(ctx context.Context, cfg *config.Config, table string) (int, error) {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return 0, fmt.Errorf("psql error: %w", err)
+		return 0, err
 	}
+	defer conn.Close(ctx)
 
-	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	var count int
+	err = conn.QueryRow(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse count: %w", err)
+		return 0, err
 	}
 
 	return count, nil
@@ -445,7 +431,7 @@ func TestFullE2EWorkflow(t *testing.T) {
 			(1, 'Hello World', 'My first post'),
 			(2, 'Test Post', 'Just testing');
 	`
-	err = execSQL(cfg, setupSQL)
+	err = execSQL(ctx, cfg, setupSQL)
 	require.NoError(t, err)
 
 	brancher, err := NewBrancher()
@@ -456,11 +442,11 @@ func TestFullE2EWorkflow(t *testing.T) {
 	brancher.Metadata.CurrentBranch = "main"
 	brancher.Metadata.Save()
 
-	userCount, err := countRows(cfg, "users")
+	userCount, err := countRows(ctx, cfg, "users")
 	require.NoError(t, err)
 	assert.Equal(t, 2, userCount)
 
-	postCount, err := countRows(cfg, "posts")
+	postCount, err := countRows(ctx, cfg, "posts")
 	require.NoError(t, err)
 	assert.Equal(t, 2, postCount)
 
@@ -480,14 +466,14 @@ func TestFullE2EWorkflow(t *testing.T) {
 
 		INSERT INTO users (username, email) VALUES ('charlie', 'charlie@example.com');
 	`
-	err = execSQL(cfg, featureSQL)
+	err = execSQL(ctx, cfg, featureSQL)
 	require.NoError(t, err)
 
-	userCount, err = countRows(cfg, "users")
+	userCount, err = countRows(ctx, cfg, "users")
 	require.NoError(t, err)
 	assert.Equal(t, 3, userCount)
 
-	commentCount, err := countRows(cfg, "comments")
+	commentCount, err := countRows(ctx, cfg, "comments")
 	require.NoError(t, err)
 	assert.Equal(t, 3, commentCount)
 
@@ -497,29 +483,29 @@ func TestFullE2EWorkflow(t *testing.T) {
 	err = brancher.Checkout("main")
 	require.NoError(t, err)
 
-	userCount, err = countRows(cfg, "users")
+	userCount, err = countRows(ctx, cfg, "users")
 	require.NoError(t, err)
 	assert.Equal(t, 2, userCount)
 
-	_, err = countRows(cfg, "comments")
+	_, err = countRows(ctx, cfg, "comments")
 	require.Error(t, err)
 
-	exists, err := rowExists(cfg, "users", "username", "charlie")
+	exists, err := rowExists(ctx, cfg, "users", "username", "charlie")
 	require.NoError(t, err)
 	assert.False(t, exists)
 
 	err = brancher.Checkout("feature-add-comments")
 	require.NoError(t, err)
 
-	userCount, err = countRows(cfg, "users")
+	userCount, err = countRows(ctx, cfg, "users")
 	require.NoError(t, err)
 	assert.Equal(t, 3, userCount)
 
-	commentCount, err = countRows(cfg, "comments")
+	commentCount, err = countRows(ctx, cfg, "comments")
 	require.NoError(t, err)
 	assert.Equal(t, 3, commentCount)
 
-	exists, err = rowExists(cfg, "users", "username", "charlie")
+	exists, err = rowExists(ctx, cfg, "users", "username", "charlie")
 	require.NoError(t, err)
 	assert.True(t, exists)
 
@@ -534,90 +520,62 @@ func TestFullE2EWorkflow(t *testing.T) {
 	assert.Equal(t, "main", branches[0].Name)
 }
 
-func execSQL(cfg *config.Config, sql string) error {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-c", sql,
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.CombinedOutput()
+func execSQL(ctx context.Context, cfg *config.Config, sql string) error {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return fmt.Errorf("psql error: %s, output: %s", err, string(output))
+		return err
 	}
-	return nil
+	defer conn.Close(ctx)
+
+	_, err = conn.Exec(ctx, sql)
+	return err
 }
 
-func countRows(cfg *config.Config, table string) (int, error) {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-tAc", fmt.Sprintf("SELECT COUNT(*) FROM %s", table),
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.Output()
+func countRows(ctx context.Context, cfg *config.Config, table string) (int, error) {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return 0, fmt.Errorf("psql error: %w", err)
+		return 0, err
 	}
+	defer conn.Close(ctx)
 
-	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	var count int
+	err = conn.QueryRow(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse count: %w", err)
+		return 0, err
 	}
 
 	return count, nil
 }
 
-func rowExists(cfg *config.Config, table, column, value string) (bool, error) {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-tAc", fmt.Sprintf("SELECT 1 FROM %s WHERE %s = '%s' LIMIT 1", table, column, value),
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.Output()
+func rowExists(ctx context.Context, cfg *config.Config, table, column, value string) (bool, error) {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return false, fmt.Errorf("psql error: %w", err)
+		return false, err
+	}
+	defer conn.Close(ctx)
+
+	var exists bool
+	query := "SELECT EXISTS(SELECT 1 FROM " + table + " WHERE " + column + " = $1)"
+	err = conn.QueryRow(ctx, query, value).Scan(&exists)
+	if err != nil {
+		return false, err
 	}
 
-	return strings.TrimSpace(string(output)) == "1", nil
+	return exists, nil
 }
 
-func getProductPrice(cfg *config.Config, productName string) (string, error) {
-	cmd := exec.Command("psql",
-		"-h", cfg.Host,
-		"-p", fmt.Sprintf("%d", cfg.Port),
-		"-U", cfg.User,
-		"-d", cfg.Database,
-		"-tAc", fmt.Sprintf("SELECT price FROM products WHERE name = '%s'", productName),
-	)
-
-	if cfg.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", cfg.Password))
-	}
-
-	output, err := cmd.Output()
+func getProductPrice(ctx context.Context, cfg *config.Config, productName string) (string, error) {
+	conn, err := pgx.Connect(ctx, cfg.ConnectionURLForDB(cfg.Database))
 	if err != nil {
-		return "", fmt.Errorf("psql error: %w", err)
+		return "", err
+	}
+	defer conn.Close(ctx)
+
+	var price string
+	err = conn.QueryRow(ctx, "SELECT price FROM products WHERE name = $1", productName).Scan(&price)
+	if err != nil {
+		return "", err
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	return price, nil
 }

@@ -108,6 +108,15 @@ func (c *Config) ConnectionString() string {
 	return connStr
 }
 
+func (c *Config) ConnectionURLForDB(dbName string) string {
+	if c.Password != "" {
+		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+			c.User, c.Password, c.Host, c.Port, dbName)
+	}
+	return fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
+		c.User, c.Host, c.Port, dbName)
+}
+
 func (c *Config) Validate() error {
 	if c.Database == "" {
 		return fmt.Errorf("database name is required")

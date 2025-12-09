@@ -1,11 +1,10 @@
 package postgres
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/le-vlad/pgbranch/pkg/config"
 )
 
@@ -17,189 +16,141 @@ func NewClient(cfg *config.Config) *Client {
 	return &Client{Config: cfg}
 }
 
-func (c *Client) buildEnv() []string {
-	env := []string{
-		fmt.Sprintf("PGHOST=%s", c.Config.Host),
-		fmt.Sprintf("PGPORT=%d", c.Config.Port),
-		fmt.Sprintf("PGUSER=%s", c.Config.User),
-		fmt.Sprintf("PGDATABASE=%s", c.Config.Database),
+func (c *Client) connect(ctx context.Context, dbName string) (*pgx.Conn, error) {
+	connStr := c.Config.ConnectionURLForDB(dbName)
+	conn, err := pgx.Connect(ctx, connStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database %s: %w", dbName, err)
 	}
-	if c.Config.Password != "" {
-		env = append(env, fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-	return env
+	return conn, nil
+}
+
+func (c *Client) connectAdmin(ctx context.Context) (*pgx.Conn, error) {
+	return c.connect(ctx, "postgres")
 }
 
 func (c *Client) DatabaseExists() (bool, error) {
-	cmd := exec.Command("psql",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		"-d", "postgres",
-		"-tAc", fmt.Sprintf("SELECT 1 FROM pg_database WHERE datname='%s'", c.Config.Database),
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+	ctx := context.Background()
+	conn, err := c.connectAdmin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to check database existence: %w", err)
 	}
+	defer conn.Close(ctx)
 
-	output, err := cmd.Output()
+	var exists bool
+	err = conn.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
+		c.Config.Database,
+	).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("failed to check database existence: %w", err)
 	}
 
-	return strings.TrimSpace(string(output)) == "1", nil
+	return exists, nil
 }
 
 func (c *Client) CreateDatabase() error {
-	cmd := exec.Command("createdb",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		c.Config.Database,
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-
-	output, err := cmd.CombinedOutput()
+	ctx := context.Background()
+	conn, err := c.connectAdmin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create database: %s", string(output))
+		return fmt.Errorf("failed to create database: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{c.Config.Database}.Sanitize()))
+	if err != nil {
+		return fmt.Errorf("failed to create database: %w", err)
 	}
 	return nil
 }
 
 func (c *Client) DropDatabase() error {
-	cmd := exec.Command("dropdb",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		"--if-exists",
-		c.Config.Database,
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-
-	output, err := cmd.CombinedOutput()
+	ctx := context.Background()
+	conn, err := c.connectAdmin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to drop database: %s", string(output))
+		return fmt.Errorf("failed to drop database: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", pgx.Identifier{c.Config.Database}.Sanitize()))
+	if err != nil {
+		return fmt.Errorf("failed to drop database: %w", err)
 	}
 	return nil
 }
 
 func (c *Client) TerminateConnections() error {
-	query := fmt.Sprintf(`
-		SELECT pg_terminate_backend(pid)
-		FROM pg_stat_activity
-		WHERE datname = '%s' AND pid <> pg_backend_pid()
-	`, c.Config.Database)
-
-	cmd := exec.Command("psql",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		"-d", "postgres",
-		"-c", query,
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil
-	}
-	return nil
+	return c.TerminateConnectionsTo(c.Config.Database)
 }
 
 func (c *Client) TestConnection() error {
-	cmd := exec.Command("psql",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		"-d", "postgres",
-		"-c", "SELECT 1",
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-
-	output, err := cmd.CombinedOutput()
+	ctx := context.Background()
+	conn, err := c.connectAdmin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to connect to PostgreSQL: %s", string(output))
+		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	err = conn.Ping(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 	return nil
 }
 
 func (c *Client) CreateDatabaseFromTemplate(templateDB, newDB string) error {
+	ctx := context.Background()
+
 	c.TerminateConnectionsTo(templateDB)
 
-	query := fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s", newDB, templateDB)
-	cmd := exec.Command("psql",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		"-d", "postgres",
-		"-c", query,
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-
-	output, err := cmd.CombinedOutput()
+	conn, err := c.connectAdmin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create database from template: %s", string(output))
+		return fmt.Errorf("failed to create database from template: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	query := fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s",
+		pgx.Identifier{newDB}.Sanitize(),
+		pgx.Identifier{templateDB}.Sanitize(),
+	)
+	_, err = conn.Exec(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to create database from template: %w", err)
 	}
 	return nil
 }
 
 func (c *Client) TerminateConnectionsTo(dbName string) error {
-	query := fmt.Sprintf(`
+	ctx := context.Background()
+	conn, err := c.connectAdmin(ctx)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close(ctx)
+
+	_, _ = conn.Exec(ctx, `
 		SELECT pg_terminate_backend(pid)
 		FROM pg_stat_activity
-		WHERE datname = '%s' AND pid <> pg_backend_pid()
+		WHERE datname = $1 AND pid <> pg_backend_pid()
 	`, dbName)
 
-	cmd := exec.Command("psql",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		"-d", "postgres",
-		"-c", query,
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-
-	_, _ = cmd.CombinedOutput()
 	return nil
 }
 
 func (c *Client) DropDatabaseByName(dbName string) error {
+	ctx := context.Background()
+
 	c.TerminateConnectionsTo(dbName)
 
-	cmd := exec.Command("psql",
-		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
-		"-U", c.Config.User,
-		"-d", "postgres",
-		"-c", fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName),
-	)
-
-	if c.Config.Password != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
-	}
-
-	output, err := cmd.CombinedOutput()
+	conn, err := c.connectAdmin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to drop database: %s", string(output))
+		return fmt.Errorf("failed to drop database: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", pgx.Identifier{dbName}.Sanitize()))
+	if err != nil {
+		return fmt.Errorf("failed to drop database: %w", err)
 	}
 	return nil
 }
