@@ -46,9 +46,12 @@ if pgbranch branch 2>/dev/null | grep -q "^[* ] $BRANCH$"; then
         fi
     fi
 else
-    # Branch doesn't exist, create it
+    # Branch doesn't exist, create it then checkout
     if pgbranch branch "$BRANCH" 2>/dev/null; then
         echo "pgbranch: Created database branch '$BRANCH'"
+        if pgbranch checkout "$BRANCH" 2>/dev/null; then
+            echo "pgbranch: Switched database to branch '$BRANCH'"
+        fi
     fi
 fi
 `
