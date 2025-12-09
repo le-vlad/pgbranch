@@ -95,7 +95,7 @@ func getGitHooksDir() (string, error) {
 		return "", fmt.Errorf("not a git repository")
 	}
 
-	gitDir := string(output[:len(output)-1]) // trim newline
+	gitDir := string(output[:len(output)-1])
 	hooksDir := filepath.Join(gitDir, "hooks")
 
 	return hooksDir, nil
@@ -107,16 +107,13 @@ func runHookInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Ensure hooks directory exists
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
 		return fmt.Errorf("failed to create hooks directory: %w", err)
 	}
 
 	hookPath := filepath.Join(hooksDir, "post-checkout")
 
-	// Check if hook already exists
 	if _, err := os.Stat(hookPath); err == nil {
-		// Read existing hook to check if it's ours
 		content, err := os.ReadFile(hookPath)
 		if err != nil {
 			return fmt.Errorf("failed to read existing hook: %w", err)
@@ -127,7 +124,6 @@ func runHookInstall(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		// Hook exists but isn't ours
 		yellow := color.New(color.FgYellow).SprintFunc()
 		fmt.Printf("%s A post-checkout hook already exists.\n", yellow("!"))
 		fmt.Println("  To avoid conflicts, please manually integrate pgbranch into your existing hook.")
@@ -135,7 +131,6 @@ func runHookInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("existing hook found at %s", hookPath)
 	}
 
-	// Write the hook
 	if err := os.WriteFile(hookPath, []byte(postCheckoutHook), 0755); err != nil {
 		return fmt.Errorf("failed to write hook: %w", err)
 	}
@@ -157,7 +152,6 @@ func runHookUninstall(cmd *cobra.Command, args []string) error {
 
 	hookPath := filepath.Join(hooksDir, "post-checkout")
 
-	// Check if hook exists
 	content, err := os.ReadFile(hookPath)
 	if os.IsNotExist(err) {
 		fmt.Println("No post-checkout hook found")
@@ -167,7 +161,6 @@ func runHookUninstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read hook: %w", err)
 	}
 
-	// Verify it's our hook before removing
 	if string(content) != postCheckoutHook {
 		yellow := color.New(color.FgYellow).SprintFunc()
 		fmt.Printf("%s The post-checkout hook was not installed by pgbranch.\n", yellow("!"))
@@ -175,7 +168,6 @@ func runHookUninstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("hook was not installed by pgbranch")
 	}
 
-	// Remove the hook
 	if err := os.Remove(hookPath); err != nil {
 		return fmt.Errorf("failed to remove hook: %w", err)
 	}
