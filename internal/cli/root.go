@@ -37,4 +37,5 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(hookCmd)
+	rootCmd.AddCommand(pruneCmd)
 }
