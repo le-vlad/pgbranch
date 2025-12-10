@@ -1,0 +1,34 @@
+version: '3'
+
+vars:
+  BINARY_NAME: pgbranch
+  CMD_PATH: ./cmd/pgbranch
+
+tasks:
+  default:
+    desc: Build and install pgbranch to GOPATH/bin
+    cmds:
+      - task: install
+
+  install:
+    desc: Build and install pgbranch to GOPATH/bin
+    cmds:
+      - go build -o {{.GOPATH}}/bin/{{.BINARY_NAME}} {{.CMD_PATH}}
+    vars:
+      GOPATH:
+        sh: go env GOPATH
+
+  build:
+    desc: Build pgbranch binary locally
+    cmds:
+      - go build -o {{.BINARY_NAME}} {{.CMD_PATH}}
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  clean:
+    desc: Remove built binaries
+    cmds:
+      - rm -f {{.BINARY_NAME}}
