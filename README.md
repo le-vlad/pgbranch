@@ -1,5 +1,12 @@
 # pgbranch
 
+[![Build Status](https://github.com/le-vlad/pgbranch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/le-vlad/pgbranch/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/le-vlad/pgbranch)](https://github.com/le-vlad/pgbranch/releases/latest)
+
+<p align="center">
+  <img src="img/thumb.png" alt="pgbranch" width="400">
+</p>
+
 Git branching for your PostgreSQL database.
 
 ## The Problem
