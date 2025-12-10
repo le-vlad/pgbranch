@@ -44,8 +44,8 @@ func init() {
 	rootCmd.AddCommand(hookCmd)
 	rootCmd.AddCommand(pruneCmd)
 
-	// Remote sync commands
 	rootCmd.AddCommand(newRemoteCmd())
 	rootCmd.AddCommand(newPushCmd())
 	rootCmd.AddCommand(newPullCmd())
+	rootCmd.AddCommand(newKeysCmd())
 }
