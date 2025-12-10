@@ -64,7 +64,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Type {
-	case "fs", "s3", "gcs":
+	case "fs", "s3", "r2", "gcs":
 	default:
 		return fmt.Errorf("unsupported remote type: %s", c.Type)
 	}
@@ -76,6 +76,7 @@ func (c *Config) Validate() error {
 // Supported URL formats:
 //   - /path/to/dir or file:///path/to/dir -> filesystem
 //   - s3://bucket/prefix -> S3/MinIO
+//   - r2://account-id/bucket/prefix -> Cloudflare R2
 //   - gs://bucket/prefix -> Google Cloud Storage
 func ParseURL(name, rawURL string) (*Config, error) {
 	if strings.HasPrefix(rawURL, "/") {
@@ -105,6 +106,27 @@ func ParseURL(name, rawURL string) (*Config, error) {
 		cfg.Type = "s3"
 		cfg.Options["bucket"] = u.Host
 		cfg.Options["prefix"] = strings.TrimPrefix(u.Path, "/")
+	case "r2":
+		// r2://account-id/bucket/prefix
+		// Host is the account ID, path contains bucket and optional prefix
+		cfg.Type = "r2"
+		accountID := u.Host
+		if accountID == "" {
+			return nil, fmt.Errorf("R2 URL requires account ID: r2://<account-id>/<bucket>[/<prefix>]")
+		}
+		cfg.Options["account_id"] = accountID
+		cfg.Options["endpoint"] = fmt.Sprintf("https://%s.r2.cloudflarestorage.com", accountID)
+
+		// Parse path: /bucket/prefix or /bucket
+		path := strings.TrimPrefix(u.Path, "/")
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) == 0 || parts[0] == "" {
+			return nil, fmt.Errorf("R2 URL requires bucket name: r2://<account-id>/<bucket>[/<prefix>]")
+		}
+		cfg.Options["bucket"] = parts[0]
+		if len(parts) > 1 {
+			cfg.Options["prefix"] = parts[1]
+		}
 	case "gs":
 		cfg.Type = "gcs"
 		cfg.Options["bucket"] = u.Host

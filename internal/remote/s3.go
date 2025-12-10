@@ -10,19 +10,22 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
+	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/le-vlad/pgbranch/internal/credentials"
 )
 
 func init() {
 	Register("s3", NewS3Remote)
+	Register("r2", NewS3Remote) // R2 is S3-compatible
 }
 
 type S3Remote struct {
-	name   string
-	bucket string
-	prefix string
-	client *s3.Client
+	name       string
+	remoteType string // "s3" or "r2"
+	bucket     string
+	prefix     string
+	client     *s3.Client
 }
 
 func NewS3Remote(cfg *Config) (Remote, error) {
@@ -32,9 +35,13 @@ func NewS3Remote(cfg *Config) (Remote, error) {
 	}
 
 	prefix := cfg.Options["prefix"]
+	remoteType := cfg.Type
+	if remoteType == "" {
+		remoteType = "s3"
+	}
 
 	ctx := context.Background()
-	awsCfg, err := loadAWSConfig(ctx, cfg.Options)
+	awsCfg, err := loadAWSConfig(ctx, cfg.Options, remoteType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
@@ -42,28 +49,25 @@ func NewS3Remote(cfg *Config) (Remote, error) {
 	client := s3.NewFromConfig(awsCfg)
 
 	return &S3Remote{
-		name:   cfg.Name,
-		bucket: bucket,
-		prefix: prefix,
-		client: client,
+		name:       cfg.Name,
+		remoteType: remoteType,
+		bucket:     bucket,
+		prefix:     prefix,
+		client:     client,
 	}, nil
 }
 
-func loadAWSConfig(ctx context.Context, options map[string]string) (aws.Config, error) {
+func loadAWSConfig(ctx context.Context, options map[string]string, remoteType string) (aws.Config, error) {
 	var optFns []func(*config.LoadOptions) error
 
-	accessKey := options["access_key"]
-	if accessKey == "" {
-		accessKey = os.Getenv("AWS_ACCESS_KEY_ID")
-	}
-	secretKey := options["secret_key"]
-	if secretKey == "" {
-		secretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
+	creds, err := credentials.GetCredentials(options, remoteType)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("failed to get credentials: %w", err)
 	}
 
-	if accessKey != "" && secretKey != "" {
+	if creds.AccessKey != "" && creds.SecretKey != "" {
 		optFns = append(optFns, config.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+			awscreds.NewStaticCredentialsProvider(creds.AccessKey, creds.SecretKey, ""),
 		))
 	}
 
@@ -72,7 +76,11 @@ func loadAWSConfig(ctx context.Context, options map[string]string) (aws.Config, 
 		region = os.Getenv("AWS_REGION")
 	}
 	if region == "" {
-		region = "us-east-1"
+		if remoteType == "r2" {
+			region = "auto"
+		} else {
+			region = "us-east-1"
+		}
 	}
 	optFns = append(optFns, config.WithRegion(region))
 
@@ -97,7 +105,7 @@ func (r *S3Remote) Name() string {
 }
 
 func (r *S3Remote) Type() string {
-	return "s3"
+	return r.remoteType
 }
 
 func (r *S3Remote) objectKey(branchName string) string {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/le-vlad/pgbranch/internal/credentials"
 	"github.com/le-vlad/pgbranch/internal/remote"
 	"github.com/le-vlad/pgbranch/pkg/config"
 	"github.com/spf13/cobra"
@@ -17,9 +18,10 @@ func newRemoteCmd() *cobra.Command {
 		Long: `Manage remote storage backends for sharing database snapshots.
 
 Supported remote types:
-  - Filesystem: /path/to/dir or file:///path/to/dir
-  - S3/MinIO:   s3://bucket/prefix
-  - GCS:        gs://bucket/prefix (coming soon)`,
+  - Filesystem:    /path/to/dir or file:///path/to/dir
+  - S3/MinIO:      s3://bucket/prefix
+  - Cloudflare R2: r2://account-id/bucket/prefix
+  - GCS:           gs://bucket/prefix (coming soon)`,
 	}
 
 	cmd.AddCommand(
@@ -35,6 +37,8 @@ Supported remote types:
 }
 
 func newRemoteAddCmd() *cobra.Command {
+	var skipCredentials bool
+
 	cmd := &cobra.Command{
 		Use:   "add <name> <url>",
 		Short: "Add a new remote",
@@ -45,11 +49,14 @@ Examples:
   pgbranch remote add origin /shared/snapshots
   pgbranch remote add local ~/pgbranch-snapshots
 
-  # Add an S3 remote
+  # Add an S3 remote (will prompt for credentials)
   pgbranch remote add origin s3://my-bucket/pgbranch
 
-  # Add a MinIO remote (set AWS_ENDPOINT_URL environment variable)
-  AWS_ENDPOINT_URL=http://localhost:9000 pgbranch remote add minio s3://my-bucket/pgbranch`,
+  # Add a Cloudflare R2 remote (will prompt for credentials)
+  pgbranch remote add origin r2://account-id/my-bucket/pgbranch
+
+  # Skip credential prompts (use environment variables instead)
+  pgbranch remote add origin s3://my-bucket/pgbranch --no-credentials`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -63,6 +70,48 @@ Examples:
 			remoteCfg, err := remote.ParseURL(name, url)
 			if err != nil {
 				return fmt.Errorf("invalid remote URL: %w", err)
+			}
+
+			if credentials.RequiresCredentials(remoteCfg.Type) && !skipCredentials {
+				if err := ensureEncryptionKey(); err != nil {
+					return err
+				}
+
+				creds, err := credentials.PromptForCredentials(remoteCfg.Type)
+				if err != nil {
+					return fmt.Errorf("failed to get credentials: %w", err)
+				}
+
+				if len(creds) > 0 {
+					save, err := credentials.ConfirmSaveCredentials()
+					if err != nil {
+						return err
+					}
+
+					if save {
+						store, err := credentials.NewStore()
+						if err != nil {
+							return fmt.Errorf("failed to create credential store: %w", err)
+						}
+
+						remoteCreds := &credentials.RemoteCredentials{
+							AccessKey: creds["access_key"],
+							SecretKey: creds["secret_key"],
+						}
+
+						encAccess, encSecret, err := store.EncryptCredentials(remoteCreds)
+						if err != nil {
+							return fmt.Errorf("failed to encrypt credentials: %w", err)
+						}
+
+						if encAccess != "" {
+							remoteCfg.Options["encrypted_access_key"] = encAccess
+						}
+						if encSecret != "" {
+							remoteCfg.Options["encrypted_secret_key"] = encSecret
+						}
+					}
+				}
 			}
 
 			configRemote := &config.RemoteConfig{
@@ -89,7 +138,30 @@ Examples:
 		},
 	}
 
+	cmd.Flags().BoolVar(&skipCredentials, "no-credentials", false, "Skip credential prompts")
+
 	return cmd
+}
+
+func ensureEncryptionKey() error {
+	if credentials.KeyExists() {
+		return nil
+	}
+
+	keyPath, err := credentials.GetKeyPath()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("No encryption key found. Generating one...")
+	_, _, err = credentials.EnsureKey()
+	if err != nil {
+		return fmt.Errorf("failed to generate encryption key: %w", err)
+	}
+
+	fmt.Printf("Encryption key saved to: %s\n", keyPath)
+	fmt.Println("This key is used to encrypt credentials stored in project configs.")
+	return nil
 }
 
 func newRemoteRemoveCmd() *cobra.Command {

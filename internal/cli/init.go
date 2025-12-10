@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/le-vlad/pgbranch/internal/core"
+	"github.com/le-vlad/pgbranch/internal/credentials"
 	"github.com/le-vlad/pgbranch/pkg/config"
 )
 
@@ -52,6 +53,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	green := color.New(color.FgGreen).SprintFunc()
 	fmt.Printf("%s Initialized pgbranch for database '%s'\n", green("✓"), initDatabase)
+
+	if !credentials.KeyExists() {
+		keyPath, _ := credentials.GetKeyPath()
+		_, _, err := credentials.EnsureKey()
+		if err != nil {
+			fmt.Printf("\nWarning: failed to generate encryption key: %v\n", err)
+		} else {
+			fmt.Printf("%s Generated encryption key at %s\n", green("✓"), keyPath)
+		}
+	}
+
 	fmt.Println("\nNext steps:")
 	fmt.Println("  pgbranch branch main    # Create your first branch")
 
