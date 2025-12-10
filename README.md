@@ -1,6 +1,6 @@
 # pgbranch
 
-[![Build Status](https://github.com/le-vlad/pgbranch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/le-vlad/pgbranch/actions/workflows/ci.yml)
+[![Build Status](https://github.com/le-vlad/pgbranch/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/le-vlad/pgbranch/actions/workflows/go.yml)
 [![Latest Release](https://img.shields.io/github/v/release/le-vlad/pgbranch)](https://github.com/le-vlad/pgbranch/releases/latest)
 
 <p align="center">
