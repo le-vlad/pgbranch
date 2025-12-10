@@ -20,7 +20,12 @@ Example workflow:
   pgbranch branch main
   pgbranch branch feature-x
   pgbranch checkout main
-  pgbranch delete feature-x`,
+  pgbranch delete feature-x
+
+Share snapshots with your team:
+  pgbranch remote add origin /shared/snapshots
+  pgbranch push main
+  pgbranch pull main`,
 }
 
 func Execute() {
@@ -38,4 +43,9 @@ func init() {
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(hookCmd)
 	rootCmd.AddCommand(pruneCmd)
+
+	// Remote sync commands
+	rootCmd.AddCommand(newRemoteCmd())
+	rootCmd.AddCommand(newPushCmd())
+	rootCmd.AddCommand(newPullCmd())
 }
