@@ -120,6 +120,80 @@ To remove the hook:
 pgbranch hook uninstall
 ```
 
+## Remotes
+
+Share database snapshots across machines or with your team using remote storage backends.
+
+### Supported Backends
+
+- **Filesystem**: `/path/to/dir` or `file:///path/to/dir`
+- **S3/MinIO**: `s3://bucket/prefix`
+- **Cloudflare R2**: `r2://account-id/bucket/prefix`
+- **GCS**: `gs://bucket/prefix` (coming soon)
+
+### Remote Commands
+
+```
+pgbranch remote add <name> <url>     Add a remote
+pgbranch remote list                 List configured remotes
+pgbranch remote remove <name>        Remove a remote
+pgbranch remote set-default <name>   Set default remote
+pgbranch remote ls-remote            List branches on remote
+pgbranch remote delete <branch>      Delete branch from remote
+pgbranch push <branch>               Push branch to remote
+pgbranch pull <branch>               Pull branch from remote
+```
+
+### Setting Up a Remote
+
+```bash
+# Add a filesystem remote (local network share, mounted drive, etc.)
+pgbranch remote add origin /shared/snapshots
+
+# Add an S3 remote (will prompt for credentials)
+pgbranch remote add origin s3://my-bucket/pgbranch
+
+# Add a Cloudflare R2 remote
+pgbranch remote add origin r2://account-id/my-bucket/pgbranch
+
+# Skip credential prompts and use environment variables instead
+pgbranch remote add origin s3://my-bucket/pgbranch --no-credentials
+```
+
+### Push and Pull
+
+```bash
+# Push a local branch to the remote
+pgbranch push main
+
+# Push with a description
+pgbranch push main --description "Clean schema with seed data"
+
+# Force overwrite if branch exists on remote
+pgbranch push main --force
+
+# Pull a branch from remote
+pgbranch pull main
+
+# Pull with a different local name
+pgbranch pull main --as main-backup
+
+# Force overwrite if local branch exists
+pgbranch pull main --force
+```
+
+### Credentials
+
+For S3 and R2 remotes, pgbranch will prompt for your access key and secret key. These credentials are encrypted and stored in your project's `.pgbranch.json` config.
+
+To use environment variables instead (useful for CI/CD), add the remote with `--no-credentials`:
+
+```bash
+pgbranch remote add origin s3://bucket/prefix --no-credentials
+```
+
+Then set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in your environment.
+
 ## Caveats
 
 - This is for **local development only**. Don't use this in production.
