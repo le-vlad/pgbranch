@@ -33,11 +33,9 @@ var checkoutCmd = &cobra.Command{
 	Long: `Switch to a different branch by restoring its snapshot.
 
 This will:
-1. Drop the current database
-2. Create a fresh database
-3. Restore the branch's snapshot
-
-Warning: Any uncommitted changes to the current database will be lost.
+1. Save the current branch's database state
+2. Drop the current database
+3. Restore the target branch's snapshot
 
 Example:
   pgbranch checkout main
@@ -60,6 +58,10 @@ func runCheckout(cmd *cobra.Command, args []string) error {
 	}
 
 	yellow := color.New(color.FgYellow).SprintFunc()
+	currentBranch := brancher.CurrentBranch()
+	if currentBranch != "" {
+		fmt.Printf("%s Saving branch '%s'...\n", yellow("→"), currentBranch)
+	}
 	fmt.Printf("%s Switching to branch '%s'...\n", yellow("→"), name)
 
 	if err := brancher.Checkout(name); err != nil {

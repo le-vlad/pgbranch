@@ -43,6 +43,7 @@ func init() {
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(hookCmd)
 	rootCmd.AddCommand(pruneCmd)
+	rootCmd.AddCommand(updateCmd)
 
 	rootCmd.AddCommand(newRemoteCmd())
 	rootCmd.AddCommand(newPushCmd())
