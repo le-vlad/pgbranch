@@ -579,3 +579,96 @@ func getProductPrice(ctx context.Context, cfg *config.Config, productName string
 
 	return price, nil
 }
+
+func TestCheckoutAutoSave(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+
+	pg, err := testutil.StartPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer pg.Stop(ctx)
+
+	testDir := testutil.SetupTestDir(t)
+	defer testDir.Cleanup(t)
+
+	cfg := pg.GetConfig()
+
+	err = Initialize(cfg.Database, cfg.Host, cfg.Port, cfg.User, cfg.Password)
+	require.NoError(t, err)
+
+	setupSQL := `
+		CREATE TABLE items (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(100) NOT NULL
+		);
+		INSERT INTO items (name) VALUES ('original_item');
+	`
+	err = execSQL(ctx, cfg, setupSQL)
+	require.NoError(t, err)
+
+	brancher, err := NewBrancher()
+	require.NoError(t, err)
+
+	err = brancher.CreateBranch("main")
+	require.NoError(t, err)
+	brancher.Metadata.CurrentBranch = "main"
+	brancher.Metadata.Save()
+
+	err = brancher.CreateBranch("feature")
+	require.NoError(t, err)
+
+	err = brancher.Checkout("feature")
+	require.NoError(t, err)
+
+	featureSQL := `
+		INSERT INTO items (name) VALUES ('feature_item');
+		UPDATE items SET name = 'modified_original' WHERE name = 'original_item';
+	`
+	err = execSQL(ctx, cfg, featureSQL)
+	require.NoError(t, err)
+
+	count, err := countRows(ctx, cfg, "items")
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	exists, err := rowExists(ctx, cfg, "items", "name", "feature_item")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	err = brancher.Checkout("main")
+	require.NoError(t, err)
+
+	count, err = countRows(ctx, cfg, "items")
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	exists, err = rowExists(ctx, cfg, "items", "name", "original_item")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	exists, err = rowExists(ctx, cfg, "items", "name", "feature_item")
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	err = brancher.Checkout("feature")
+	require.NoError(t, err)
+
+	count, err = countRows(ctx, cfg, "items")
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	exists, err = rowExists(ctx, cfg, "items", "name", "feature_item")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	exists, err = rowExists(ctx, cfg, "items", "name", "modified_original")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	exists, err = rowExists(ctx, cfg, "items", "name", "original_item")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}

@@ -104,6 +104,12 @@ func (b *Brancher) Checkout(name string) error {
 		return fmt.Errorf("branch '%s' does not exist", name)
 	}
 
+	if b.Metadata.CurrentBranch != "" && b.Metadata.CurrentBranch != name {
+		if err := b.UpdateBranch(b.Metadata.CurrentBranch); err != nil {
+			return fmt.Errorf("failed to save current branch '%s': %w", b.Metadata.CurrentBranch, err)
+		}
+	}
+
 	snapshotDBName := branch.Snapshot
 
 	if err := b.Client.RestoreFromSnapshot(snapshotDBName); err != nil {
