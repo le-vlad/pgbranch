@@ -12,6 +12,20 @@
 
 Git branching for your PostgreSQL database.
 
+## Table of Contents
+
+- [The Problem](#the-problem)
+- [The Solution](#the-solution)
+- [How It Works](#how-it-works)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Commands](#commands)
+- [Schema Diff](#schema-diff)
+- [Schema Merge](#schema-merge) *(Beta)*
+- [Automatic Branch Switching](#automatic-branch-switching)
+- [Remotes](#remotes)
+- [Caveats](#caveats)
+
 ## The Problem
 
 You're working on a feature branch. You run migrations. Life is good.
@@ -84,6 +98,8 @@ pgbranch status                Show current branch and info
 pgbranch log                   Show all branches with details
 pgbranch hook install          Install git hook for auto-switching
 pgbranch hook uninstall        Remove the git hook
+pgbranch diff <branch1> [branch2]  Compare schemas between branches
+pgbranch merge <source> <target>   Merge schema changes (Beta)
 ```
 
 ### Init Options
@@ -95,6 +111,100 @@ pgbranch hook uninstall        Remove the git hook
 -U, --user       PostgreSQL user (default: postgres)
 -W, --password   PostgreSQL password
 ```
+
+## Schema Diff
+
+Compare the schema between two database branches to see what changed.
+
+```bash
+# Compare two branches
+pgbranch diff main feature-auth
+
+# Compare a branch against current working database
+pgbranch diff main
+
+# Show summary statistics only
+pgbranch diff main feature-auth --stat
+
+# Show SQL statements needed to migrate
+pgbranch diff main feature-auth --sql
+```
+
+### What It Detects
+
+- **Tables**: Created, dropped
+- **Columns**: Added, removed, type changes, nullability, defaults
+- **Indexes**: Created, dropped, modified
+- **Constraints**: Primary keys, foreign keys, unique, check constraints
+- **Enums**: Created, dropped, new values added
+- **Functions**: Created, dropped, body changes
+
+### Output Format
+
+```
+Comparing 'main' → 'feature-auth'
+
++ TABLE public.sessions
+    id uuid NOT NULL
+    user_id uuid NOT NULL
+    expires_at timestamp with time zone NOT NULL
+
+~ TABLE public.users
+  + COLUMN last_login timestamp with time zone
+  ~ COLUMN email: type varchar(100) → varchar(255)
+
++ INDEX idx_sessions_user_id on public.sessions(user_id)
+
+Summary:
+  + 5 addition(s)
+  ~ 1 modification(s)
+```
+
+Changes are color-coded: `+` green (additions), `-` red (deletions), `~` yellow (modifications). Destructive changes are flagged with a warning indicator.
+
+## Schema Merge
+
+> **Beta**: This feature is in beta. Use with caution and always backup important data.
+
+Merge schema changes from one branch into another. This applies the schema diff as actual DDL statements to the target branch.
+
+```bash
+# Merge feature branch into main
+pgbranch merge feature-auth main
+
+# Preview changes without applying (dry run)
+pgbranch merge feature-auth main --dry-run
+
+# Generate a migration file instead of applying directly
+pgbranch merge feature-auth main --migration-file
+
+# Specify custom migration directory
+pgbranch merge feature-auth main --migration-file --migration-dir ./db/migrations
+
+# Force merge without confirmation prompts
+pgbranch merge feature-auth main --force
+```
+
+### Safety Features
+
+- **Dry run mode**: Preview all SQL statements before applying
+- **Destructive change warnings**: Explicitly warns about `DROP TABLE`, `DROP COLUMN`, and other data-loss operations
+- **Confirmation prompts**: Requires explicit confirmation for destructive changes
+- **Validation**: Checks for potential issues before applying
+
+### Migration File Generation
+
+Instead of applying changes directly, generate a timestamped SQL migration file:
+
+```bash
+pgbranch merge feature-auth main --migration-file
+# Creates: migrations/20240115143022_merge_feature_auth.sql
+```
+
+The generated file includes:
+- Header with source/target branch info
+- All DDL statements in correct dependency order
+- Comments for destructive operations
 
 ## Requirements
 
@@ -129,10 +239,14 @@ Share database snapshots across machines or with your team using remote storage 
 
 ### Supported Backends
 
-- **Filesystem**: `/path/to/dir` or `file:///path/to/dir`
-- **S3/MinIO**: `s3://bucket/prefix`
-- **Cloudflare R2**: `r2://account-id/bucket/prefix`
-- **GCS**: `gs://bucket/prefix` (coming soon)
+| Backend | URL Format | Status |
+|---------|------------|--------|
+| Filesystem | `/path/to/dir` or `file:///path/to/dir` | Supported |
+| AWS S3 | `s3://bucket/prefix` | Supported |
+| MinIO | `s3://bucket/prefix` (S3-compatible) | Supported |
+| Cloudflare R2 | `r2://account-id/bucket/prefix` | Supported |
+| Google Cloud Storage | `gs://bucket/prefix` | Planned |
+| Azure Blob Storage | - | Planned |
 
 ### Remote Commands
 
