@@ -1,3 +1,5 @@
+// Package postgres provides PostgreSQL database operations for managing
+// database snapshots and template databases.
 package postgres
 
 import (
@@ -8,10 +10,12 @@ import (
 	"github.com/le-vlad/pgbranch/pkg/config"
 )
 
+// Client provides methods for PostgreSQL database operations.
 type Client struct {
 	Config *config.Config
 }
 
+// NewClient creates a new PostgreSQL client with the given configuration.
 func NewClient(cfg *config.Config) *Client {
 	return &Client{Config: cfg}
 }
@@ -29,6 +33,7 @@ func (c *Client) connectAdmin(ctx context.Context) (*pgx.Conn, error) {
 	return c.connect(ctx, "postgres")
 }
 
+// DatabaseExists checks if the configured database exists.
 func (c *Client) DatabaseExists() (bool, error) {
 	ctx := context.Background()
 	conn, err := c.connectAdmin(ctx)
@@ -49,6 +54,7 @@ func (c *Client) DatabaseExists() (bool, error) {
 	return exists, nil
 }
 
+// CreateDatabase creates the configured database.
 func (c *Client) CreateDatabase() error {
 	ctx := context.Background()
 	conn, err := c.connectAdmin(ctx)
@@ -64,6 +70,7 @@ func (c *Client) CreateDatabase() error {
 	return nil
 }
 
+// DropDatabase drops the configured database if it exists.
 func (c *Client) DropDatabase() error {
 	ctx := context.Background()
 	conn, err := c.connectAdmin(ctx)
@@ -79,10 +86,12 @@ func (c *Client) DropDatabase() error {
 	return nil
 }
 
+// TerminateConnections terminates all connections to the configured database.
 func (c *Client) TerminateConnections() error {
 	return c.TerminateConnectionsTo(c.Config.Database)
 }
 
+// TestConnection verifies that a connection can be established to PostgreSQL.
 func (c *Client) TestConnection() error {
 	ctx := context.Background()
 	conn, err := c.connectAdmin(ctx)
@@ -98,6 +107,8 @@ func (c *Client) TestConnection() error {
 	return nil
 }
 
+// CreateDatabaseFromTemplate creates a new database using the specified
+// template database.
 func (c *Client) CreateDatabaseFromTemplate(templateDB, newDB string) error {
 	ctx := context.Background()
 
@@ -120,6 +131,7 @@ func (c *Client) CreateDatabaseFromTemplate(templateDB, newDB string) error {
 	return nil
 }
 
+// TerminateConnectionsTo terminates all connections to the specified database.
 func (c *Client) TerminateConnectionsTo(dbName string) error {
 	ctx := context.Background()
 	conn, err := c.connectAdmin(ctx)
@@ -137,6 +149,7 @@ func (c *Client) TerminateConnectionsTo(dbName string) error {
 	return nil
 }
 
+// DropDatabaseByName drops the specified database if it exists.
 func (c *Client) DropDatabaseByName(dbName string) error {
 	ctx := context.Background()
 

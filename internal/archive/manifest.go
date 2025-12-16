@@ -10,12 +10,15 @@ import (
 )
 
 const (
+	// ManifestFileName is the name of the manifest file in the archive.
 	ManifestFileName = "manifest.json"
-	DumpFileName     = "dump.pgc"
-	CurrentVersion   = 1
+	// DumpFileName is the name of the database dump file in the archive.
+	DumpFileName = "dump.pgc"
+	// CurrentVersion is the current manifest format version.
+	CurrentVersion = 1
 )
 
-// Manifest contains metadata about a snapshot archive
+// Manifest contains metadata about a snapshot archive.
 type Manifest struct {
 	Version int `json:"version"`
 
@@ -40,6 +43,7 @@ type Manifest struct {
 	Description string `json:"description,omitempty"`
 }
 
+// NewManifest creates a new manifest with the given branch and database names.
 func NewManifest(branch, database string) *Manifest {
 	return &Manifest{
 		Version:   CurrentVersion,
@@ -49,6 +53,7 @@ func NewManifest(branch, database string) *Manifest {
 	}
 }
 
+// Validate checks that all required manifest fields are set and valid.
 func (m *Manifest) Validate() error {
 	if m.Version == 0 {
 		return fmt.Errorf("manifest version is required")
@@ -71,10 +76,12 @@ func (m *Manifest) Validate() error {
 	return nil
 }
 
+// ToJSON serializes the manifest to JSON.
 func (m *Manifest) ToJSON() ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
 }
 
+// ParseManifest parses a manifest from JSON data.
 func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -83,6 +90,7 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
+// ComputeChecksum computes a SHA256 checksum and size for the given reader.
 func ComputeChecksum(r io.Reader) (string, int64, error) {
 	h := sha256.New()
 	n, err := io.Copy(h, r)
@@ -92,6 +100,7 @@ func ComputeChecksum(r io.Reader) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// VerifyChecksum verifies that the checksum of the reader matches the expected value.
 func VerifyChecksum(r io.Reader, expectedChecksum string) (bool, error) {
 	checksum, _, err := ComputeChecksum(r)
 	if err != nil {
