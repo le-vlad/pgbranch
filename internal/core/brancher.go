@@ -1,3 +1,5 @@
+// Package core provides the main business logic for pgbranch,
+// implementing database branching operations using PostgreSQL template databases.
 package core
 
 import (
@@ -9,12 +11,17 @@ import (
 	"github.com/le-vlad/pgbranch/pkg/config"
 )
 
+// Brancher manages database branches, coordinating between the PostgreSQL
+// client, configuration, and metadata storage.
 type Brancher struct {
 	Config   *config.Config
 	Metadata *storage.Metadata
 	Client   *postgres.Client
 }
 
+// NewBrancher creates a new Brancher instance by loading the configuration
+// and metadata from the current directory. Returns an error if pgbranch
+// has not been initialized.
 func NewBrancher() (*Brancher, error) {
 	if !config.IsInitialized() {
 		return nil, fmt.Errorf("pgbranch not initialized. Run 'pgbranch init' first")
@@ -37,6 +44,8 @@ func NewBrancher() (*Brancher, error) {
 	}, nil
 }
 
+// Initialize sets up pgbranch in the current directory with the given
+// database connection parameters.
 func Initialize(database, host string, port int, user, password string) error {
 	rootDir, err := config.GetRootDir()
 	if err != nil {
@@ -76,6 +85,8 @@ func Initialize(database, host string, port int, user, password string) error {
 	return nil
 }
 
+// CreateBranch creates a new branch from the current database state.
+// The branch is stored as a PostgreSQL template database.
 func (b *Brancher) CreateBranch(name string) error {
 	if b.Metadata.BranchExists(name) {
 		return fmt.Errorf("branch '%s' already exists", name)
@@ -98,6 +109,9 @@ func (b *Brancher) CreateBranch(name string) error {
 	return nil
 }
 
+// Checkout switches to the specified branch by replacing the working database
+// with a copy of the branch's snapshot. The current branch state is saved
+// before switching.
 func (b *Brancher) Checkout(name string) error {
 	branch, ok := b.Metadata.GetBranch(name)
 	if !ok {
@@ -129,6 +143,8 @@ func (b *Brancher) Checkout(name string) error {
 	return nil
 }
 
+// DeleteBranch removes a branch and its associated snapshot database.
+// Returns an error if trying to delete the current branch without force.
 func (b *Brancher) DeleteBranch(name string, force bool) error {
 	if name == b.Metadata.CurrentBranch && !force {
 		return fmt.Errorf("cannot delete current branch '%s'. Use --force to override", name)
@@ -158,12 +174,14 @@ func (b *Brancher) DeleteBranch(name string, force bool) error {
 	return nil
 }
 
+// BranchInfo contains information about a branch for display purposes.
 type BranchInfo struct {
 	Name      string
 	IsCurrent bool
 	Branch    *storage.Branch
 }
 
+// ListBranches returns all branches sorted alphabetically by name.
 func (b *Brancher) ListBranches() []BranchInfo {
 	branches := make([]BranchInfo, 0, len(b.Metadata.Branches))
 
@@ -182,14 +200,18 @@ func (b *Brancher) ListBranches() []BranchInfo {
 	return branches
 }
 
+// CurrentBranch returns the name of the currently checked out branch.
 func (b *Brancher) CurrentBranch() string {
 	return b.Metadata.CurrentBranch
 }
 
+// Status returns the current branch name and total number of branches.
 func (b *Brancher) Status() (currentBranch string, branchCount int) {
 	return b.Metadata.CurrentBranch, len(b.Metadata.Branches)
 }
 
+// UpdateBranch updates an existing branch's snapshot to match the current
+// database state.
 func (b *Brancher) UpdateBranch(name string) error {
 	branch, ok := b.Metadata.GetBranch(name)
 	if !ok {
@@ -209,8 +231,12 @@ func (b *Brancher) UpdateBranch(name string) error {
 	return nil
 }
 
+// DefaultStaleDays is the default number of days after which a branch
+// is considered stale.
 const DefaultStaleDays = 7
 
+// GetStaleBranches returns branches that haven't been accessed in the
+// specified number of days, sorted by staleness (oldest first).
 func (b *Brancher) GetStaleBranches(staleDays int) []BranchInfo {
 	staleBranches := b.Metadata.GetStaleBranches(staleDays)
 	result := make([]BranchInfo, 0, len(staleBranches))
@@ -230,6 +256,8 @@ func (b *Brancher) GetStaleBranches(staleDays int) []BranchInfo {
 	return result
 }
 
+// PruneBranches deletes multiple branches by name, returning the list of
+// successfully deleted branches and any errors encountered.
 func (b *Brancher) PruneBranches(names []string) (deleted []string, errors []error) {
 	for _, name := range names {
 		if err := b.DeleteBranch(name, true); err != nil {

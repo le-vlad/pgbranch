@@ -1,3 +1,6 @@
+// Package config provides configuration management for pgbranch.
+// It handles loading, saving, and validating configuration files
+// that store database connection settings and remote storage backends.
 package config
 
 import (
@@ -8,12 +11,15 @@ import (
 )
 
 const (
-	DirName        = ".pgbranch"
+	// DirName is the name of the pgbranch configuration directory.
+	DirName = ".pgbranch"
+	// ConfigFileName is the name of the main configuration file.
 	ConfigFileName = "config.json"
-	SnapshotsDir   = "snapshots"
+	// SnapshotsDir is the name of the directory containing snapshot metadata.
+	SnapshotsDir = "snapshots"
 )
 
-// RemoteConfig holds configuration for a remote storage backend
+// RemoteConfig holds configuration for a remote storage backend.
 type RemoteConfig struct {
 	// Name is the name of this remote (e.g., "origin")
 	Name string `json:"name"`
@@ -28,6 +34,8 @@ type RemoteConfig struct {
 	Options map[string]string `json:"options,omitempty"`
 }
 
+// Config holds the main configuration for pgbranch, including
+// database connection settings and remote storage configurations.
 type Config struct {
 	Database string `json:"database"`
 	Host     string `json:"host"`
@@ -40,6 +48,7 @@ type Config struct {
 	DefaultRemote string `json:"default_remote,omitempty"`
 }
 
+// DefaultConfig returns a new Config with default values for PostgreSQL connection.
 func DefaultConfig() *Config {
 	return &Config{
 		Host: "localhost",
@@ -48,6 +57,7 @@ func DefaultConfig() *Config {
 	}
 }
 
+// GetRootDir returns the absolute path to the pgbranch configuration directory.
 func GetRootDir() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -56,6 +66,7 @@ func GetRootDir() (string, error) {
 	return filepath.Join(cwd, DirName), nil
 }
 
+// GetConfigPath returns the absolute path to the configuration file.
 func GetConfigPath() (string, error) {
 	rootDir, err := GetRootDir()
 	if err != nil {
@@ -64,6 +75,7 @@ func GetConfigPath() (string, error) {
 	return filepath.Join(rootDir, ConfigFileName), nil
 }
 
+// GetSnapshotsDir returns the absolute path to the snapshots directory.
 func GetSnapshotsDir() (string, error) {
 	rootDir, err := GetRootDir()
 	if err != nil {
@@ -72,6 +84,7 @@ func GetSnapshotsDir() (string, error) {
 	return filepath.Join(rootDir, SnapshotsDir), nil
 }
 
+// IsInitialized returns true if pgbranch has been initialized in the current directory.
 func IsInitialized() bool {
 	rootDir, err := GetRootDir()
 	if err != nil {
@@ -81,6 +94,7 @@ func IsInitialized() bool {
 	return err == nil
 }
 
+// Load reads and parses the configuration file from the current directory.
 func Load() (*Config, error) {
 	configPath, err := GetConfigPath()
 	if err != nil {
@@ -100,6 +114,7 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// Save writes the configuration to the configuration file.
 func (c *Config) Save() error {
 	configPath, err := GetConfigPath()
 	if err != nil {
@@ -118,6 +133,7 @@ func (c *Config) Save() error {
 	return nil
 }
 
+// ConnectionString returns a PostgreSQL connection string for the configured database.
 func (c *Config) ConnectionString() string {
 	connStr := fmt.Sprintf("host=%s port=%d user=%s dbname=%s sslmode=disable",
 		c.Host, c.Port, c.User, c.Database)
@@ -127,6 +143,7 @@ func (c *Config) ConnectionString() string {
 	return connStr
 }
 
+// ConnectionURLForDB returns a PostgreSQL connection URL for the specified database name.
 func (c *Config) ConnectionURLForDB(dbName string) string {
 	if c.Password != "" {
 		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
@@ -136,6 +153,7 @@ func (c *Config) ConnectionURLForDB(dbName string) string {
 		c.User, c.Host, c.Port, dbName)
 }
 
+// Validate checks that all required configuration fields are set.
 func (c *Config) Validate() error {
 	if c.Database == "" {
 		return fmt.Errorf("database name is required")
@@ -152,10 +170,13 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// EnsureDir creates the specified directory and any necessary parents if they don't exist.
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
+// AddRemote adds a new remote configuration. If this is the first remote,
+// it will be set as the default.
 func (c *Config) AddRemote(remote *RemoteConfig) error {
 	if remote.Name == "" {
 		return fmt.Errorf("remote name is required")
@@ -175,6 +196,8 @@ func (c *Config) AddRemote(remote *RemoteConfig) error {
 	return nil
 }
 
+// RemoveRemote removes a remote configuration by name. If the removed remote
+// was the default, another remote will be set as default if available.
 func (c *Config) RemoveRemote(name string) error {
 	if c.Remotes == nil {
 		return fmt.Errorf("remote '%s' not found", name)
@@ -195,6 +218,8 @@ func (c *Config) RemoveRemote(name string) error {
 	return nil
 }
 
+// GetRemote returns the remote configuration by name. If name is empty,
+// the default remote is returned.
 func (c *Config) GetRemote(name string) (*RemoteConfig, error) {
 	if name == "" {
 		name = c.DefaultRemote
@@ -212,6 +237,7 @@ func (c *Config) GetRemote(name string) (*RemoteConfig, error) {
 	return remote, nil
 }
 
+// ListRemotes returns all configured remotes.
 func (c *Config) ListRemotes() []*RemoteConfig {
 	if c.Remotes == nil {
 		return nil
@@ -223,6 +249,7 @@ func (c *Config) ListRemotes() []*RemoteConfig {
 	return remotes
 }
 
+// SetDefaultRemote sets the default remote to use when no remote is specified.
 func (c *Config) SetDefaultRemote(name string) error {
 	if c.Remotes == nil || c.Remotes[name] == nil {
 		return fmt.Errorf("remote '%s' not found", name)

@@ -1,3 +1,5 @@
+// Package archive provides functionality for creating and reading
+// pgbranch snapshot archives for remote storage and transfer.
 package archive
 
 import (
@@ -13,7 +15,7 @@ import (
 	"github.com/le-vlad/pgbranch/pkg/config"
 )
 
-// Archive represents a pgbranch snapshot archive
+// Archive represents a pgbranch snapshot archive.
 // Archive format is a gzipped tar containing:
 //   - manifest.json: metadata about the snapshot
 //   - dump.pgc: pg_dump custom format file
@@ -22,11 +24,13 @@ type Archive struct {
 	DumpData []byte
 }
 
+// CreateOptions contains optional parameters for creating an archive.
 type CreateOptions struct {
 	Description string
 	CreatedBy   string
 }
 
+// Create creates a new archive from the specified snapshot database.
 func Create(ctx context.Context, cfg *config.Config, branchName, snapshotDBName string, opts *CreateOptions) (*Archive, error) {
 	client := postgres.NewClient(cfg)
 
@@ -60,6 +64,7 @@ func Create(ctx context.Context, cfg *config.Config, branchName, snapshotDBName 
 	}, nil
 }
 
+// WriteTo writes the archive to the given writer in gzipped tar format.
 func (a *Archive) WriteTo(w io.Writer) (int64, error) {
 	gzw := gzip.NewWriter(w)
 	defer gzw.Close()
@@ -83,6 +88,7 @@ func (a *Archive) WriteTo(w io.Writer) (int64, error) {
 	return int64(len(manifestData) + len(a.DumpData)), nil
 }
 
+// writeToTar writes a single file entry to the tar archive.
 func writeToTar(tw *tar.Writer, name string, data []byte) error {
 	header := &tar.Header{
 		Name: name,
@@ -98,6 +104,7 @@ func writeToTar(tw *tar.Writer, name string, data []byte) error {
 	return err
 }
 
+// ReadFrom reads an archive from the given reader.
 func ReadFrom(r io.Reader) (*Archive, error) {
 	gzr, err := gzip.NewReader(r)
 	if err != nil {
@@ -168,6 +175,7 @@ func ReadFrom(r io.Reader) (*Archive, error) {
 	}, nil
 }
 
+// Restore restores the archive to the specified snapshot database.
 func (a *Archive) Restore(ctx context.Context, cfg *config.Config, snapshotDBName string) error {
 	client := postgres.NewClient(cfg)
 
@@ -178,6 +186,7 @@ func (a *Archive) Restore(ctx context.Context, cfg *config.Config, snapshotDBNam
 	return nil
 }
 
+// SaveToFile saves the archive to the specified file path.
 func (a *Archive) SaveToFile(path string) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -189,6 +198,7 @@ func (a *Archive) SaveToFile(path string) error {
 	return err
 }
 
+// LoadFromFile loads an archive from the specified file path.
 func LoadFromFile(path string) (*Archive, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -199,6 +209,7 @@ func LoadFromFile(path string) (*Archive, error) {
 	return ReadFrom(f)
 }
 
+// Size returns the size of the dump data in bytes.
 func (a *Archive) Size() int64 {
 	return a.Manifest.DumpSize
 }

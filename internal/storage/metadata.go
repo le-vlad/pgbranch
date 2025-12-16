@@ -1,3 +1,4 @@
+// Package storage provides persistent storage for branch metadata and snapshots.
 package storage
 
 import (
@@ -10,8 +11,10 @@ import (
 	"github.com/le-vlad/pgbranch/pkg/config"
 )
 
+// MetadataFileName is the name of the metadata file in the pgbranch directory.
 const MetadataFileName = "metadata.json"
 
+// Branch represents a database branch with its metadata.
 type Branch struct {
 	Name           string    `json:"name"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -20,6 +23,8 @@ type Branch struct {
 	Snapshot       string    `json:"snapshot"`
 }
 
+// IsStale returns true if the branch hasn't been accessed in the specified
+// number of days.
 func (b *Branch) IsStale(staleDays int) bool {
 	threshold := time.Now().AddDate(0, 0, -staleDays)
 
@@ -31,6 +36,8 @@ func (b *Branch) IsStale(staleDays int) bool {
 	return b.LastCheckoutAt.Before(threshold)
 }
 
+// DaysSinceLastAccess returns the number of days since the branch was last
+// accessed (checked out or created).
 func (b *Branch) DaysSinceLastAccess() int {
 	var lastAccess time.Time
 	if b.LastCheckoutAt.IsZero() {
@@ -42,11 +49,13 @@ func (b *Branch) DaysSinceLastAccess() int {
 	return int(time.Since(lastAccess).Hours() / 24)
 }
 
+// Metadata stores information about all branches and the current branch state.
 type Metadata struct {
 	CurrentBranch string             `json:"current_branch"`
 	Branches      map[string]*Branch `json:"branches"`
 }
 
+// NewMetadata creates a new empty Metadata instance.
 func NewMetadata() *Metadata {
 	return &Metadata{
 		CurrentBranch: "",
@@ -54,6 +63,7 @@ func NewMetadata() *Metadata {
 	}
 }
 
+// GetMetadataPath returns the absolute path to the metadata file.
 func GetMetadataPath() (string, error) {
 	rootDir, err := config.GetRootDir()
 	if err != nil {
@@ -62,6 +72,8 @@ func GetMetadataPath() (string, error) {
 	return filepath.Join(rootDir, MetadataFileName), nil
 }
 
+// LoadMetadata reads and parses the metadata file. If the file doesn't exist,
+// returns a new empty Metadata instance.
 func LoadMetadata() (*Metadata, error) {
 	metadataPath, err := GetMetadataPath()
 	if err != nil {
@@ -88,6 +100,7 @@ func LoadMetadata() (*Metadata, error) {
 	return &meta, nil
 }
 
+// Save writes the metadata to the metadata file.
 func (m *Metadata) Save() error {
 	metadataPath, err := GetMetadataPath()
 	if err != nil {
@@ -106,6 +119,7 @@ func (m *Metadata) Save() error {
 	return nil
 }
 
+// AddBranch creates and adds a new branch to the metadata.
 func (m *Metadata) AddBranch(name, parent, snapshotFile string) *Branch {
 	branch := &Branch{
 		Name:      name,
@@ -117,11 +131,13 @@ func (m *Metadata) AddBranch(name, parent, snapshotFile string) *Branch {
 	return branch
 }
 
+// GetBranch returns the branch with the given name, or false if not found.
 func (m *Metadata) GetBranch(name string) (*Branch, bool) {
 	branch, ok := m.Branches[name]
 	return branch, ok
 }
 
+// DeleteBranch removes a branch from the metadata.
 func (m *Metadata) DeleteBranch(name string) error {
 	if _, ok := m.Branches[name]; !ok {
 		return fmt.Errorf("branch '%s' does not exist", name)
@@ -130,11 +146,13 @@ func (m *Metadata) DeleteBranch(name string) error {
 	return nil
 }
 
+// BranchExists returns true if a branch with the given name exists.
 func (m *Metadata) BranchExists(name string) bool {
 	_, ok := m.Branches[name]
 	return ok
 }
 
+// ListBranches returns a list of all branch names.
 func (m *Metadata) ListBranches() []string {
 	names := make([]string, 0, len(m.Branches))
 	for name := range m.Branches {
@@ -143,6 +161,7 @@ func (m *Metadata) ListBranches() []string {
 	return names
 }
 
+// SetCurrentBranch sets the current branch to the given name.
 func (m *Metadata) SetCurrentBranch(name string) error {
 	if name != "" && !m.BranchExists(name) {
 		return fmt.Errorf("branch '%s' does not exist", name)
@@ -151,6 +170,8 @@ func (m *Metadata) SetCurrentBranch(name string) error {
 	return nil
 }
 
+// GetStaleBranches returns all branches that haven't been accessed
+// in the specified number of days.
 func (m *Metadata) GetStaleBranches(staleDays int) []*Branch {
 	var stale []*Branch
 	for _, branch := range m.Branches {
@@ -161,6 +182,7 @@ func (m *Metadata) GetStaleBranches(staleDays int) []*Branch {
 	return stale
 }
 
+// UpdateLastCheckout updates the last checkout time for the given branch.
 func (m *Metadata) UpdateLastCheckout(name string) error {
 	branch, ok := m.Branches[name]
 	if !ok {
