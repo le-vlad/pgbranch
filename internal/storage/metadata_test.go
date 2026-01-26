@@ -184,3 +184,43 @@ func TestGetMetadataPath(t *testing.T) {
 	expected := filepath.Join(cwd, config.DirName, MetadataFileName)
 	assert.Equal(t, expected, metaPath)
 }
+
+func TestGetStaleBranches(t *testing.T) {
+	meta := NewMetadata()
+
+	mainBranch := meta.AddBranch("main", "", "main.dump")
+	mainBranch.CreatedAt = mainBranch.CreatedAt.AddDate(0, 0, -30)
+
+	feature1 := meta.AddBranch("feature-1", "main", "feature-1.dump")
+	feature1.CreatedAt = feature1.CreatedAt.AddDate(0, 0, -10) // 10 days old
+
+	feature2 := meta.AddBranch("feature-2", "main", "feature-2.dump")
+	feature2.CreatedAt = feature2.CreatedAt.AddDate(0, 0, -3) // 3 days old (not stale for 7 days)
+
+	feature3 := meta.AddBranch("feature-3", "feature-1", "feature-3.dump")
+	feature3.CreatedAt = feature3.CreatedAt.AddDate(0, 0, -15) // 15 days old
+
+	staleBranches := meta.GetStaleBranches(7)
+
+	assert.Len(t, staleBranches, 2)
+
+	staleNames := make([]string, len(staleBranches))
+	for i, b := range staleBranches {
+		staleNames[i] = b.Name
+	}
+
+	assert.Contains(t, staleNames, "feature-1")
+	assert.Contains(t, staleNames, "feature-3")
+	assert.NotContains(t, staleNames, "main")
+	assert.NotContains(t, staleNames, "feature-2")
+}
+
+func TestGetStaleBranchesExcludesRootBranch(t *testing.T) {
+	meta := NewMetadata()
+
+	mainBranch := meta.AddBranch("main", "", "main.dump")
+	mainBranch.CreatedAt = mainBranch.CreatedAt.AddDate(0, 0, -100)
+	staleBranches := meta.GetStaleBranches(7)
+
+	assert.Len(t, staleBranches, 0)
+}

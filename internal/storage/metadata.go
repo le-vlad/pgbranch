@@ -171,10 +171,16 @@ func (m *Metadata) SetCurrentBranch(name string) error {
 }
 
 // GetStaleBranches returns all branches that haven't been accessed
-// in the specified number of days.
+// in the specified number of days. Excludes root branches (branches with no parent)
+// as they represent the main base branch of the project.
 func (m *Metadata) GetStaleBranches(staleDays int) []*Branch {
 	var stale []*Branch
 	for _, branch := range m.Branches {
+		// We don't want to have our main branches stale and get them removed by accident.
+		// Even though it is unlikely that they will be stale, we still want to exclude them.
+		if branch.Parent == "" {
+			continue
+		}
 		if branch.IsStale(staleDays) {
 			stale = append(stale, branch)
 		}
