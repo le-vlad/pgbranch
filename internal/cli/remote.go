@@ -21,7 +21,7 @@ Supported remote types:
   - Filesystem:    /path/to/dir or file:///path/to/dir
   - S3/MinIO:      s3://bucket/prefix
   - Cloudflare R2: r2://account-id/bucket/prefix
-  - GCS:           gs://bucket/prefix (coming soon)`,
+  - GCS:           gs://bucket/prefix`,
 	}
 
 	cmd.AddCommand(
@@ -89,26 +89,32 @@ Examples:
 					}
 
 					if save {
-						store, err := credentials.NewStore()
-						if err != nil {
-							return fmt.Errorf("failed to create credential store: %w", err)
-						}
+						if remoteCfg.Type == "gcs" {
+							if creds["service_account"] != "" {
+								remoteCfg.Options["service_account"] = creds["service_account"]
+							}
+						} else {
+							store, err := credentials.NewStore()
+							if err != nil {
+								return fmt.Errorf("failed to create credential store: %w", err)
+							}
 
-						remoteCreds := &credentials.RemoteCredentials{
-							AccessKey: creds["access_key"],
-							SecretKey: creds["secret_key"],
-						}
+							remoteCreds := &credentials.RemoteCredentials{
+								AccessKey: creds["access_key"],
+								SecretKey: creds["secret_key"],
+							}
 
-						encAccess, encSecret, err := store.EncryptCredentials(remoteCreds)
-						if err != nil {
-							return fmt.Errorf("failed to encrypt credentials: %w", err)
-						}
+							encAccess, encSecret, err := store.EncryptCredentials(remoteCreds)
+							if err != nil {
+								return fmt.Errorf("failed to encrypt credentials: %w", err)
+							}
 
-						if encAccess != "" {
-							remoteCfg.Options["encrypted_access_key"] = encAccess
-						}
-						if encSecret != "" {
-							remoteCfg.Options["encrypted_secret_key"] = encSecret
+							if encAccess != "" {
+								remoteCfg.Options["encrypted_access_key"] = encAccess
+							}
+							if encSecret != "" {
+								remoteCfg.Options["encrypted_secret_key"] = encSecret
+							}
 						}
 					}
 				}
