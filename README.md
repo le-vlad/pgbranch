@@ -318,6 +318,10 @@ Then set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in your environment.
 - Snapshots are full database copies. They take disk space.
 - Active connections to the database will be terminated on checkout.
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=le-vlad/pgbranch&type=date&legend=bottom-right)](https://www.star-history.com/#le-vlad/pgbranch&type=date&legend=bottom-right)
+
 ## License
 
 MIT
