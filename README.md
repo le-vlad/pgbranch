@@ -46,8 +46,12 @@ None of these are good.
 ```bash
 pgbranch init -d myapp_dev
 pgbranch branch main           # snapshot your clean main state
-# ... switch to feature branch, run migrations, break things ...
-pgbranch branch feature-x      # save this state too
+pgbranch checkout main         # switch to the main branch
+
+pgbranch branch feature-x      # create a new branch (snapshots current state)
+pgbranch checkout feature-x    # switch to it
+# ... run migrations, break things ...
+
 pgbranch checkout main         # instantly back to clean state
 ```
 
@@ -73,12 +77,15 @@ go install github.com/le-vlad/pgbranch/cmd/pgbranch@latest
 # Initialize for your dev database
 pgbranch init -d myapp_dev
 
-# Create a branch from current state
+# Create a branch from current state and switch to it
 pgbranch branch main
+pgbranch checkout main
+
+# Create a new feature branch and switch to it
+pgbranch branch feature-auth
+pgbranch checkout feature-auth
 
 # Do some work, run migrations, whatever
-# Then save that state
-pgbranch branch feature-auth
 
 # Go back to main
 pgbranch checkout main
@@ -245,7 +252,7 @@ Share database snapshots across machines or with your team using remote storage 
 | AWS S3 | `s3://bucket/prefix` | Supported |
 | MinIO | `s3://bucket/prefix` (S3-compatible) | Supported |
 | Cloudflare R2 | `r2://account-id/bucket/prefix` | Supported |
-| Google Cloud Storage | `gs://bucket/prefix` | Planned |
+| Google Cloud Storage | `gs://bucket/prefix` | Supported |
 | Azure Blob Storage | - | Planned |
 
 ### Remote Commands
