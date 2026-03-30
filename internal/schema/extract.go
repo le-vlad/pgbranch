@@ -10,12 +10,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Extractor extracts schema information from a PostgreSQL database.
-type Extractor struct {
-	conn *pgx.Conn
+type dbQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-func NewExtractor(conn *pgx.Conn) *Extractor {
+type Extractor struct {
+	conn dbQuerier
+}
+
+func NewExtractor(conn dbQuerier) *Extractor {
 	return &Extractor{conn: conn}
 }
 

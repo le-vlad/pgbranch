@@ -18,23 +18,33 @@ type DumpOptions struct {
 	ExcludeTables []string
 }
 
+func defaultRunDump(ctx context.Context, args []string, env []string, w io.Writer) error {
+	cmd := exec.CommandContext(ctx, "pg_dump", args...)
+	cmd.Stdout = w
+	cmd.Env = env
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pg_dump failed: %w\nstderr: %s", err, stderr.String())
+	}
+	return nil
+}
+
+func defaultRunRestore(ctx context.Context, args []string, env []string, r io.Reader) (string, error) {
+	cmd := exec.CommandContext(ctx, "pg_restore", args...)
+	cmd.Stdin = r
+	cmd.Env = env
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
+}
+
 // DumpDatabase creates a pg_dump of the specified database and writes to the provided writer.
 // Uses custom format (-Fc) which is compressed and supports parallel restore.
 func (c *Client) DumpDatabase(ctx context.Context, dbName string, w io.Writer, opts *DumpOptions) error {
 	args := c.buildDumpArgs(dbName, opts)
-
-	cmd := exec.CommandContext(ctx, "pg_dump", args...)
-	cmd.Stdout = w
-	cmd.Env = c.buildEnv()
-
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pg_dump failed: %w\nstderr: %s", err, stderr.String())
-	}
-
-	return nil
+	return c.runDump(ctx, args, c.buildEnv(), w)
 }
 
 func (c *Client) buildDumpArgs(dbName string, opts *DumpOptions) []string {
@@ -66,23 +76,12 @@ func (c *Client) buildDumpArgs(dbName string, opts *DumpOptions) []string {
 // The database must already exist and be empty.
 func (c *Client) RestoreDatabase(ctx context.Context, dbName string, r io.Reader) error {
 	args := c.buildRestoreArgs(dbName)
-
-	cmd := exec.CommandContext(ctx, "pg_restore", args...)
-	cmd.Stdin = r
-	cmd.Env = c.buildEnv()
-
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		stderrStr := stderr.String()
-		// pg_restore returns non-zero even for warnings
-		// Only fail on critical errors, not on SET parameter issues or warnings
+	stderrStr, err := c.runRestore(ctx, args, c.buildEnv(), r)
+	if err != nil {
 		if isCriticalRestoreError(stderrStr) {
 			return fmt.Errorf("pg_restore failed: %w\nstderr: %s", err, stderrStr)
 		}
 	}
-
 	return nil
 }
 

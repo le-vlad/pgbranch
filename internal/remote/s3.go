@@ -15,6 +15,14 @@ import (
 	"github.com/le-vlad/pgbranch/internal/credentials"
 )
 
+type s3API interface {
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+}
+
 func init() {
 	Register("s3", NewS3Remote)
 	Register("r2", NewS3Remote) // R2 is S3-compatible
@@ -25,7 +33,7 @@ type S3Remote struct {
 	remoteType string // "s3" or "r2"
 	bucket     string
 	prefix     string
-	client     *s3.Client
+	client     s3API
 }
 
 func NewS3Remote(cfg *Config) (Remote, error) {
@@ -165,19 +173,21 @@ func (r *S3Remote) List(ctx context.Context) ([]RemoteBranch, error) {
 	}
 
 	var branches []RemoteBranch
+	var continuationToken *string
 
-	paginator := s3.NewListObjectsV2Paginator(r.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(r.bucket),
-		Prefix: aws.String(prefix),
-	})
+	for {
+		input := &s3.ListObjectsV2Input{
+			Bucket:            aws.String(r.bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: continuationToken,
+		}
 
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
+		output, err := r.client.ListObjectsV2(ctx, input)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
 		}
 
-		for _, obj := range page.Contents {
+		for _, obj := range output.Contents {
 			if obj.Key == nil {
 				continue
 			}
@@ -205,6 +215,11 @@ func (r *S3Remote) List(ctx context.Context) ([]RemoteBranch, error) {
 
 			branches = append(branches, branch)
 		}
+
+		if !aws.ToBool(output.IsTruncated) {
+			break
+		}
+		continuationToken = output.NextContinuationToken
 	}
 
 	return branches, nil

@@ -1,7 +1,11 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -268,4 +272,307 @@ func rowExists(ctx context.Context, cfg *config.Config, table, column, value str
 	}
 
 	return exists, nil
+}
+
+func TestIsCriticalRestoreError(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{
+			name:   "empty stderr",
+			stderr: "",
+			want:   false,
+		},
+		{
+			name:   "no ERROR keyword",
+			stderr: "pg_restore: warning: some warning message",
+			want:   false,
+		},
+		{
+			name:   "non-critical unrecognized configuration parameter",
+			stderr: "pg_restore: ERROR: unrecognized configuration parameter \"some_param\"",
+			want:   false,
+		},
+		{
+			name:   "non-critical errors ignored on restore",
+			stderr: "pg_restore: ERROR: unrecognized configuration parameter \"some_param\"\npg_restore: warning: errors ignored on restore: 1",
+			want:   false,
+		},
+		{
+			name:   "critical error relation does not exist",
+			stderr: "pg_restore: ERROR: relation \"users\" does not exist",
+			want:   true,
+		},
+		{
+			name:   "both non-critical and critical errors",
+			stderr: "pg_restore: ERROR: unrecognized configuration parameter \"some_param\"\npg_restore: ERROR: relation \"users\" does not exist",
+			want:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isCriticalRestoreError(tt.stderr)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestBuildDumpArgs(t *testing.T) {
+	cfg := &config.Config{
+		Host: "localhost",
+		Port: 5432,
+		User: "testuser",
+	}
+	client := NewClient(cfg)
+
+	t.Run("nil opts", func(t *testing.T) {
+		args := client.buildDumpArgs("mydb", nil)
+		expected := []string{
+			"-h", "localhost",
+			"-p", "5432",
+			"-U", "testuser",
+			"-Fc",
+			"--no-password",
+			"mydb",
+		}
+		assert.Equal(t, expected, args)
+	})
+
+	t.Run("schema only", func(t *testing.T) {
+		args := client.buildDumpArgs("mydb", &DumpOptions{SchemaOnly: true})
+		assert.Contains(t, args, "--schema-only")
+	})
+
+	t.Run("data only", func(t *testing.T) {
+		args := client.buildDumpArgs("mydb", &DumpOptions{DataOnly: true})
+		assert.Contains(t, args, "--data-only")
+	})
+
+	t.Run("exclude tables", func(t *testing.T) {
+		args := client.buildDumpArgs("mydb", &DumpOptions{
+			ExcludeTables: []string{"table_a", "table_b"},
+		})
+		assert.Contains(t, args, "--exclude-table")
+
+		excludeCount := 0
+		for i, arg := range args {
+			if arg == "--exclude-table" {
+				excludeCount++
+				if i+1 < len(args) {
+					assert.Contains(t, []string{"table_a", "table_b"}, args[i+1])
+				}
+			}
+		}
+		assert.Equal(t, 2, excludeCount)
+	})
+}
+
+func TestBuildRestoreArgs(t *testing.T) {
+	cfg := &config.Config{
+		Host: "dbhost",
+		Port: 5433,
+		User: "restoreuser",
+	}
+	client := NewClient(cfg)
+
+	args := client.buildRestoreArgs("targetdb")
+	expected := []string{
+		"-h", "dbhost",
+		"-p", "5433",
+		"-U", "restoreuser",
+		"-d", "targetdb",
+		"--no-password",
+		"--no-owner",
+		"--no-privileges",
+	}
+	assert.Equal(t, expected, args)
+}
+
+func TestBuildEnv(t *testing.T) {
+	t.Run("without password", func(t *testing.T) {
+		cfg := &config.Config{
+			Host: "localhost",
+			Port: 5432,
+			User: "testuser",
+		}
+		client := NewClient(cfg)
+		env := client.buildEnv()
+
+		for _, v := range env {
+			assert.NotContains(t, v, "PGPASSWORD=")
+		}
+	})
+
+	t.Run("with password", func(t *testing.T) {
+		cfg := &config.Config{
+			Host:     "localhost",
+			Port:     5432,
+			User:     "testuser",
+			Password: "secret123",
+		}
+		client := NewClient(cfg)
+		env := client.buildEnv()
+
+		found := false
+		for _, v := range env {
+			if v == "PGPASSWORD=secret123" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "expected PGPASSWORD=secret123 in env")
+	})
+}
+
+func TestSanitizeIdentifier(t *testing.T) {
+	t.Run("simple name", func(t *testing.T) {
+		assert.Equal(t, `"mydb"`, sanitizeIdentifier("mydb"))
+	})
+
+	t.Run("name with double quotes", func(t *testing.T) {
+		assert.Equal(t, `"my""db"`, sanitizeIdentifier(`my"db`))
+	})
+}
+
+func newMockClient(cfg *config.Config) *Client {
+	return &Client{Config: cfg}
+}
+
+func TestDumpDatabase_Success(t *testing.T) {
+	cfg := &config.Config{Host: "localhost", Port: 5432, User: "testuser"}
+	client := newMockClient(cfg)
+	client.runDump = func(ctx context.Context, args []string, env []string, w io.Writer) error {
+		_, err := w.Write([]byte("dump-output"))
+		return err
+	}
+
+	var buf bytes.Buffer
+	err := client.DumpDatabase(context.Background(), "mydb", &buf, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "dump-output", buf.String())
+}
+
+func TestDumpDatabase_Error(t *testing.T) {
+	cfg := &config.Config{Host: "localhost", Port: 5432, User: "testuser"}
+	client := newMockClient(cfg)
+	client.runDump = func(ctx context.Context, args []string, env []string, w io.Writer) error {
+		return errors.New("dump failed")
+	}
+
+	var buf bytes.Buffer
+	err := client.DumpDatabase(context.Background(), "mydb", &buf, nil)
+	require.Error(t, err)
+	assert.Equal(t, "dump failed", err.Error())
+}
+
+func TestDumpDatabase_PassesCorrectArgs(t *testing.T) {
+	cfg := &config.Config{Host: "dbhost", Port: 5433, User: "admin", Password: "secret"}
+	client := newMockClient(cfg)
+
+	var capturedArgs []string
+	var capturedEnv []string
+	client.runDump = func(ctx context.Context, args []string, env []string, w io.Writer) error {
+		capturedArgs = args
+		capturedEnv = env
+		return nil
+	}
+
+	var buf bytes.Buffer
+	err := client.DumpDatabase(context.Background(), "testdb", &buf, &DumpOptions{SchemaOnly: true})
+	require.NoError(t, err)
+
+	assert.Contains(t, capturedArgs, "-h")
+	assert.Contains(t, capturedArgs, "dbhost")
+	assert.Contains(t, capturedArgs, "-p")
+	assert.Contains(t, capturedArgs, "5433")
+	assert.Contains(t, capturedArgs, "-U")
+	assert.Contains(t, capturedArgs, "admin")
+	assert.Contains(t, capturedArgs, "-Fc")
+	assert.Contains(t, capturedArgs, "testdb")
+	assert.Contains(t, capturedArgs, "--schema-only")
+
+	found := false
+	for _, v := range capturedEnv {
+		if v == "PGPASSWORD=secret" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected PGPASSWORD=secret in env")
+}
+
+func TestRestoreDatabase_Success(t *testing.T) {
+	cfg := &config.Config{Host: "localhost", Port: 5432, User: "testuser"}
+	client := newMockClient(cfg)
+	client.runRestore = func(ctx context.Context, args []string, env []string, r io.Reader) (string, error) {
+		return "", nil
+	}
+
+	err := client.RestoreDatabase(context.Background(), "mydb", bytes.NewReader(nil))
+	require.NoError(t, err)
+}
+
+func TestRestoreDatabase_NonCriticalError(t *testing.T) {
+	cfg := &config.Config{Host: "localhost", Port: 5432, User: "testuser"}
+	client := newMockClient(cfg)
+	client.runRestore = func(ctx context.Context, args []string, env []string, r io.Reader) (string, error) {
+		return `pg_restore: ERROR: unrecognized configuration parameter "some_param"`, fmt.Errorf("exit status 1")
+	}
+
+	err := client.RestoreDatabase(context.Background(), "mydb", bytes.NewReader(nil))
+	require.NoError(t, err)
+}
+
+func TestRestoreDatabase_CriticalError(t *testing.T) {
+	cfg := &config.Config{Host: "localhost", Port: 5432, User: "testuser"}
+	client := newMockClient(cfg)
+	client.runRestore = func(ctx context.Context, args []string, env []string, r io.Reader) (string, error) {
+		return `pg_restore: ERROR: relation "foo" does not exist`, fmt.Errorf("exit status 1")
+	}
+
+	err := client.RestoreDatabase(context.Background(), "mydb", bytes.NewReader(nil))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pg_restore failed")
+}
+
+func TestRestoreDatabase_PassesCorrectArgs(t *testing.T) {
+	cfg := &config.Config{Host: "restorehost", Port: 5434, User: "restoreuser"}
+	client := newMockClient(cfg)
+
+	var capturedArgs []string
+	client.runRestore = func(ctx context.Context, args []string, env []string, r io.Reader) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	err := client.RestoreDatabase(context.Background(), "targetdb", bytes.NewReader(nil))
+	require.NoError(t, err)
+
+	expected := []string{
+		"-h", "restorehost",
+		"-p", "5434",
+		"-U", "restoreuser",
+		"-d", "targetdb",
+		"--no-password",
+		"--no-owner",
+		"--no-privileges",
+	}
+	assert.Equal(t, expected, capturedArgs)
+}
+
+func TestDumpSnapshotToWriter_DelegatesToDump(t *testing.T) {
+	cfg := &config.Config{Host: "localhost", Port: 5432, User: "testuser"}
+	client := newMockClient(cfg)
+	client.runDump = func(ctx context.Context, args []string, env []string, w io.Writer) error {
+		_, err := w.Write([]byte("snapshot-data"))
+		return err
+	}
+
+	var buf bytes.Buffer
+	err := client.DumpSnapshotToWriter(context.Background(), "snap_db", &buf)
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot-data", buf.String())
 }

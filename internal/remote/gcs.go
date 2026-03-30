@@ -14,15 +14,62 @@ import (
 	"google.golang.org/api/option"
 )
 
+type gcsBucketAPI interface {
+	Object(name string) gcsObjectAPI
+	Objects(ctx context.Context, q *storage.Query) gcsObjectIteratorAPI
+}
+
+type gcsObjectAPI interface {
+	NewWriter(ctx context.Context) io.WriteCloser
+	NewReader(ctx context.Context) (io.ReadCloser, error)
+	Attrs(ctx context.Context) (*storage.ObjectAttrs, error)
+	Delete(ctx context.Context) error
+}
+
+type gcsObjectIteratorAPI interface {
+	Next() (*storage.ObjectAttrs, error)
+}
+
+type gcsBucketAdapter struct {
+	handle *storage.BucketHandle
+}
+
+func (a *gcsBucketAdapter) Object(name string) gcsObjectAPI {
+	return &gcsObjectAdapter{handle: a.handle.Object(name)}
+}
+
+func (a *gcsBucketAdapter) Objects(ctx context.Context, q *storage.Query) gcsObjectIteratorAPI {
+	return a.handle.Objects(ctx, q)
+}
+
+type gcsObjectAdapter struct {
+	handle *storage.ObjectHandle
+}
+
+func (a *gcsObjectAdapter) NewWriter(ctx context.Context) io.WriteCloser {
+	return a.handle.NewWriter(ctx)
+}
+
+func (a *gcsObjectAdapter) NewReader(ctx context.Context) (io.ReadCloser, error) {
+	return a.handle.NewReader(ctx)
+}
+
+func (a *gcsObjectAdapter) Attrs(ctx context.Context) (*storage.ObjectAttrs, error) {
+	return a.handle.Attrs(ctx)
+}
+
+func (a *gcsObjectAdapter) Delete(ctx context.Context) error {
+	return a.handle.Delete(ctx)
+}
+
 func init() {
 	Register("gcs", NewGCSRemote)
 }
 
 type GCSRemote struct {
 	name   string
-	bucket string
 	prefix string
-	client *storage.Client
+	client gcsBucketAPI
 }
 
 func NewGCSRemote(cfg *Config) (Remote, error) {
@@ -41,9 +88,8 @@ func NewGCSRemote(cfg *Config) (Remote, error) {
 
 	return &GCSRemote{
 		name:   cfg.Name,
-		bucket: bucket,
 		prefix: prefix,
-		client: client,
+		client: &gcsBucketAdapter{handle: client.Bucket(bucket)},
 	}, nil
 }
 
@@ -86,9 +132,11 @@ func (r *GCSRemote) objectKey(branchName string) string {
 func (r *GCSRemote) Push(ctx context.Context, branchName string, reader io.Reader, size int64) error {
 	key := r.objectKey(branchName)
 
-	obj := r.client.Bucket(r.bucket).Object(key)
+	obj := r.client.Object(key)
 	w := obj.NewWriter(ctx)
-	w.ContentType = "application/x-pgbranch"
+	if gw, ok := w.(*storage.Writer); ok {
+		gw.ContentType = "application/x-pgbranch"
+	}
 
 	if _, err := io.Copy(w, reader); err != nil {
 		w.Close()
@@ -105,7 +153,7 @@ func (r *GCSRemote) Push(ctx context.Context, branchName string, reader io.Reade
 func (r *GCSRemote) Pull(ctx context.Context, branchName string) (io.ReadCloser, int64, error) {
 	key := r.objectKey(branchName)
 
-	obj := r.client.Bucket(r.bucket).Object(key)
+	obj := r.client.Object(key)
 
 	attrs, err := obj.Attrs(ctx)
 	if err != nil {
@@ -128,7 +176,7 @@ func (r *GCSRemote) List(ctx context.Context) ([]RemoteBranch, error) {
 
 	var branches []RemoteBranch
 
-	it := r.client.Bucket(r.bucket).Objects(ctx, &storage.Query{
+	it := r.client.Objects(ctx, &storage.Query{
 		Prefix: prefix,
 	})
 
@@ -161,7 +209,7 @@ func (r *GCSRemote) List(ctx context.Context) ([]RemoteBranch, error) {
 func (r *GCSRemote) Delete(ctx context.Context, branchName string) error {
 	key := r.objectKey(branchName)
 
-	obj := r.client.Bucket(r.bucket).Object(key)
+	obj := r.client.Object(key)
 	if err := obj.Delete(ctx); err != nil {
 		return fmt.Errorf("failed to delete from GCS: %w", err)
 	}
@@ -172,7 +220,7 @@ func (r *GCSRemote) Delete(ctx context.Context, branchName string) error {
 func (r *GCSRemote) Exists(ctx context.Context, branchName string) (bool, error) {
 	key := r.objectKey(branchName)
 
-	obj := r.client.Bucket(r.bucket).Object(key)
+	obj := r.client.Object(key)
 	_, err := obj.Attrs(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
