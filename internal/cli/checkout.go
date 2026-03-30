@@ -27,6 +27,8 @@ func showStaleWarning(brancher *core.Brancher) {
 	fmt.Printf("  Run '%s' to clean up stale database clones.\n", orange("pgbranch prune"))
 }
 
+var autoCreateBranch bool
+
 var checkoutCmd = &cobra.Command{
 	Use:   "checkout <branch>",
 	Short: "Switch to a different branch",
@@ -37,11 +39,18 @@ This will:
 2. Drop the current database
 3. Restore the target branch's snapshot
 
+Use -b to create a new branch and switch to it.
+
 Example:
   pgbranch checkout main
-  pgbranch checkout feature-x`,
+  pgbranch checkout feature-x
+  pgbranch checkout -b new-feature`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCheckout,
+}
+
+func init() {
+	checkoutCmd.Flags().BoolVarP(&autoCreateBranch, "branch", "b", false, "Create a new branch and switch to it")
 }
 
 func runCheckout(cmd *cobra.Command, args []string) error {
@@ -51,6 +60,19 @@ func runCheckout(cmd *cobra.Command, args []string) error {
 	}
 
 	name := args[0]
+
+	if autoCreateBranch {
+		if brancher.Metadata.BranchExists(name) {
+			return fmt.Errorf("fatal: a branch named '%s' already exists", name)
+		}
+
+		yellow := color.New(color.FgYellow).SprintFunc()
+		fmt.Printf("%s Creating branch '%s'...\n", yellow("→"), name)
+
+		if err := brancher.CreateBranch(name); err != nil {
+			return err
+		}
+	}
 
 	if brancher.CurrentBranch() == name {
 		fmt.Printf("Already on branch '%s'\n", name)

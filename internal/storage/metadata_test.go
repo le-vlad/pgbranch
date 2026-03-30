@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -223,4 +224,57 @@ func TestGetStaleBranchesExcludesRootBranch(t *testing.T) {
 	staleBranches := meta.GetStaleBranches(7)
 
 	assert.Len(t, staleBranches, 0)
+}
+
+func TestDaysSinceLastAccess(t *testing.T) {
+	t.Run("recent checkout returns 0", func(t *testing.T) {
+		b := &Branch{
+			Name:           "feature-1",
+			CreatedAt:      time.Now().Add(-48 * time.Hour),
+			LastCheckoutAt: time.Now(),
+		}
+		assert.Equal(t, 0, b.DaysSinceLastAccess())
+	})
+
+	t.Run("checkout 10 days ago returns 10", func(t *testing.T) {
+		b := &Branch{
+			Name:           "feature-2",
+			CreatedAt:      time.Now().Add(-30 * 24 * time.Hour),
+			LastCheckoutAt: time.Now().Add(-10 * 24 * time.Hour),
+		}
+		assert.Equal(t, 10, b.DaysSinceLastAccess())
+	})
+
+	t.Run("zero LastCheckoutAt falls back to CreatedAt", func(t *testing.T) {
+		b := &Branch{
+			Name:      "feature-3",
+			CreatedAt: time.Now().Add(-5 * 24 * time.Hour),
+		}
+		assert.True(t, b.LastCheckoutAt.IsZero())
+		assert.Equal(t, 5, b.DaysSinceLastAccess())
+	})
+}
+
+func TestUpdateLastCheckout(t *testing.T) {
+	t.Run("updates existing branch", func(t *testing.T) {
+		meta := NewMetadata()
+		meta.AddBranch("feature-1", "", "feature-1.dump")
+
+		before := time.Now()
+		err := meta.UpdateLastCheckout("feature-1")
+		require.NoError(t, err)
+
+		branch, ok := meta.GetBranch("feature-1")
+		require.True(t, ok)
+		assert.False(t, branch.LastCheckoutAt.IsZero())
+		assert.True(t, !branch.LastCheckoutAt.Before(before))
+	})
+
+	t.Run("returns error for non-existent branch", func(t *testing.T) {
+		meta := NewMetadata()
+
+		err := meta.UpdateLastCheckout("non-existent")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "does not exist")
+	})
 }

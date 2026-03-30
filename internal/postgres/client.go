@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/le-vlad/pgbranch/pkg/config"
@@ -12,12 +13,18 @@ import (
 
 // Client provides methods for PostgreSQL database operations.
 type Client struct {
-	Config *config.Config
+	Config     *config.Config
+	runDump    func(ctx context.Context, args []string, env []string, w io.Writer) error
+	runRestore func(ctx context.Context, args []string, env []string, r io.Reader) (string, error)
 }
 
 // NewClient creates a new PostgreSQL client with the given configuration.
 func NewClient(cfg *config.Config) *Client {
-	return &Client{Config: cfg}
+	return &Client{
+		Config:     cfg,
+		runDump:    defaultRunDump,
+		runRestore: defaultRunRestore,
+	}
 }
 
 func (c *Client) connect(ctx context.Context, dbName string) (*pgx.Conn, error) {
