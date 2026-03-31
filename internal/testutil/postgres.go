@@ -31,8 +31,13 @@ type TestPostgres struct {
 }
 
 func StartPostgresContainer(ctx context.Context) (*TestPostgres, error) {
-	pgContainer, err := postgres.Run(ctx,
-		"postgres:17-alpine",
+	return StartPostgresContainerWithArgs(ctx, nil)
+}
+
+// StartPostgresContainerWithArgs starts a PostgreSQL container with custom server arguments.
+// Use this to configure wal_level=logical, max_replication_slots, etc.
+func StartPostgresContainerWithArgs(ctx context.Context, serverArgs []string) (*TestPostgres, error) {
+	opts := []testcontainers.ContainerCustomizer{
 		postgres.WithDatabase(TestDBName),
 		postgres.WithUsername(TestUser),
 		postgres.WithPassword(TestPassword),
@@ -41,6 +46,18 @@ func StartPostgresContainer(ctx context.Context) (*TestPostgres, error) {
 				WithOccurrence(2).
 				WithStartupTimeout(60*time.Second),
 		),
+	}
+
+	if len(serverArgs) > 0 {
+		// Pass custom PostgreSQL server arguments via the container command.
+		cmd := []string{"postgres"}
+		cmd = append(cmd, serverArgs...)
+		opts = append(opts, testcontainers.WithCmd(cmd...))
+	}
+
+	pgContainer, err := postgres.Run(ctx,
+		"postgres:17-alpine",
+		opts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start postgres container: %w", err)
