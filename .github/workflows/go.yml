@@ -8,9 +8,11 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+    types: [opened, synchronize, reopened]
 
 jobs:
-  build:
+  lint:
+    name: Lint & Vet
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,11 +22,25 @@ jobs:
         with:
           go-version: "1.25"
 
+      - name: Vet
+        run: go vet ./...
+
       - name: Build
         run: go build -v ./cmd/pgbranch
 
-      - name: Test with coverage
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+  test-unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.25"
+
+      - name: Unit tests
+        run: go test -v -race -short -coverprofile=coverage.txt -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -34,3 +50,18 @@ jobs:
           verbose: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [lint, test-unit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.25"
+
+      - name: Integration tests
+        run: go test -v -race -timeout 300s -run 'Test.*Integration|TestGrace|TestValidate|TestResolve' ./...

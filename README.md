@@ -22,6 +22,7 @@ Git branching for your PostgreSQL database.
 - [Commands](#commands)
 - [Schema Diff](#schema-diff)
 - [Schema Merge](#schema-merge) *(Beta)*
+- [Grace Migration](#grace-migration)
 - [Automatic Branch Switching](#automatic-branch-switching)
 - [Remotes](#remotes)
 - [Caveats](#caveats)
@@ -107,6 +108,7 @@ pgbranch hook install          Install git hook for auto-switching
 pgbranch hook uninstall        Remove the git hook
 pgbranch diff <branch1> [branch2]  Compare schemas between branches
 pgbranch merge <source> <target>   Merge schema changes (Beta)
+pgbranch grace -c <config.yaml>    Migrate database via logical replication
 ```
 
 ### Init Options
@@ -212,6 +214,81 @@ The generated file includes:
 - Header with source/target branch info
 - All DDL statements in correct dependency order
 - Comments for destructive operations
+
+## Grace Migration
+
+Gracefully migrate a PostgreSQL database to another instance using logical replication. Grace copies schema, performs an initial data snapshot, then streams live changes -- all with table-by-table progress.
+
+```bash
+# Full migration (schema + snapshot + live streaming)
+pgbranch grace -c migration.yaml
+
+# Copy schema only
+pgbranch grace -c migration.yaml --schema-only
+
+# Copy schema + initial data, then stop (no live streaming)
+pgbranch grace -c migration.yaml --snapshot-only
+
+# Keep replication slot on exit for later resume
+pgbranch grace -c migration.yaml --keep
+```
+
+### Configuration
+
+Create a YAML file describing the source and target:
+
+```yaml
+source:
+  host: source-db.example.com
+  port: 5432
+  database: myapp
+  user: replicator
+  password: secret
+  sslmode: require          # disable, allow, prefer (default), require, verify-ca, verify-full
+
+target:
+  host: target-db.example.com
+  port: 5432
+  database: myapp
+  user: admin
+  password: secret
+  sslmode: require
+
+# Tables to migrate (use ["*"] for all user tables)
+tables:
+  - public.users
+  - public.orders
+  - public.products
+
+# Optional settings
+slot_name: grace_slot              # replication slot name (default: grace_slot)
+publication_name: grace_pub        # publication name (default: grace_pub)
+batch_size: 10000                  # rows per batch during snapshot (default: 10000)
+```
+
+### How It Works
+
+1. **Validate** -- Checks source has `wal_level=logical`, verifies connectivity, resolves table list
+2. **Schema Copy** -- Extracts DDL from source (tables, columns, indexes, constraints, enums, functions) and applies to target
+3. **Setup Replication** -- Creates a publication and replication slot on source, exports a consistent snapshot
+4. **Initial Snapshot** -- Copies all table data using PostgreSQL's COPY protocol at the consistent snapshot point
+5. **WAL Streaming** -- Streams INSERT/UPDATE/DELETE changes in real-time via logical decoding (pgoutput)
+6. **Shutdown** -- On Ctrl+C: flushes checkpoint, drops slot + publication (unless `--keep` is set)
+
+### Requirements
+
+- Source PostgreSQL must have `wal_level=logical` (set with `ALTER SYSTEM SET wal_level = 'logical'` + restart)
+- Source user must have `REPLICATION` privilege
+- Tables should have a `PRIMARY KEY` for UPDATE/DELETE replication
+- At least one free replication slot on source
+
+### Resume Support
+
+If interrupted, grace saves a checkpoint file alongside your config. Re-running the same command skips completed tables and resumes WAL streaming from the last confirmed position. Use `--keep` to preserve the replication slot across runs.
+
+### Progress Display
+
+Grace shows a rich TUI with per-table progress bars during the snapshot phase and live counters (inserts, updates, deletes, ops/sec) during streaming. Falls back to periodic log lines in non-TTY environments.
 
 ## Requirements
 
