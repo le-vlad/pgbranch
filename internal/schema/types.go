@@ -183,6 +183,9 @@ const (
 	ConstraintUnique     ConstraintType = "UNIQUE"
 	ConstraintCheck      ConstraintType = "CHECK"
 	ConstraintExclusion  ConstraintType = "EXCLUDE"
+	ConstraintNotNull    ConstraintType = "NOT NULL"
+	ConstraintTrigger    ConstraintType = "TRIGGER"
+	ConstraintUnknown    ConstraintType = "UNKNOWN"
 )
 
 type Constraint struct {

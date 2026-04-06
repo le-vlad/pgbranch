@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"fmt"
@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Styles
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -49,8 +48,6 @@ var (
 			Italic(true)
 )
 
-// TUI message types sent from the migration goroutine.
-
 type PhaseMsg struct {
 	Phase string
 }
@@ -82,7 +79,6 @@ type MigrationDoneMsg struct {
 
 type tickMsg time.Time
 
-// Model is the bubbletea model for the grace TUI.
 type Model struct {
 	phase     string
 	tables    []tableRow
@@ -221,7 +217,7 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	b.WriteString("\n")
-	b.WriteString("  " + titleStyle.Render("Grace Migration"))
+	b.WriteString("  " + titleStyle.Render("Continuous Migration"))
 	b.WriteString("\n")
 
 	switch m.phase {
@@ -334,7 +330,6 @@ func formatCount(n int64) string {
 	return fmt.Sprintf("%d,%03d,%03d", n/1_000_000, (n/1000)%1000, n%1000)
 }
 
-// PlainLogger is a fallback for non-TTY environments.
 type PlainLogger struct {
 	phase     string
 	startTime time.Time

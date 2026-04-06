@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"context"
@@ -12,43 +12,37 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
-// RelationInfo stores decoded table metadata from pgoutput RelationMessages.
 type RelationInfo struct {
 	SchemaName string
 	TableName  string
 	Columns    []ColumnInfo
 }
 
-// FullName returns schema.table.
 func (r *RelationInfo) FullName() string {
 	return r.SchemaName + "." + r.TableName
 }
 
-// ColumnInfo describes a single column in a relation.
 type ColumnInfo struct {
 	Name   string
 	IsKey  bool
 	TypeOID uint32
 }
 
-// Replicator manages the logical replication connection and WAL streaming.
 type Replicator struct {
-	replConn    *pgconn.PgConn  // replication protocol connection
-	sourceConn  *pgx.Conn       // regular query connection to source
-	targetConn  *pgx.Conn       // connection to target for applying changes
+	replConn    *pgconn.PgConn
+	sourceConn  *pgx.Conn
+	targetConn  *pgx.Conn
 	config      *Config
 	tables      []string
 	relations   map[uint32]*RelationInfo
 	checkpoint  *Checkpoint
-	sendCh      chan any // sends TUI messages
+	sendCh      chan any
 
-	// Streaming stats
 	inserts int64
 	updates int64
 	deletes int64
 }
 
-// NewReplicator creates a new replicator with connections to source and target.
 func NewReplicator(cfg *Config, tables []string, checkpoint *Checkpoint, sendCh chan any) *Replicator {
 	return &Replicator{
 		config:     cfg,
@@ -59,23 +53,19 @@ func NewReplicator(cfg *Config, tables []string, checkpoint *Checkpoint, sendCh 
 	}
 }
 
-// Connect establishes all required connections.
 func (r *Replicator) Connect(ctx context.Context) error {
-	// Regular query connection to source.
 	sourceConn, err := pgx.Connect(ctx, r.config.Source.ConnectionURL())
 	if err != nil {
 		return fmt.Errorf("failed to connect to source: %w", err)
 	}
 	r.sourceConn = sourceConn
 
-	// Target connection.
 	targetConn, err := pgx.Connect(ctx, r.config.Target.ConnectionURL())
 	if err != nil {
 		return fmt.Errorf("failed to connect to target: %w", err)
 	}
 	r.targetConn = targetConn
 
-	// Replication connection to source.
 	replConn, err := pgconn.Connect(ctx, r.config.Source.ReplicationURL())
 	if err != nil {
 		return fmt.Errorf("failed to create replication connection: %w", err)
@@ -85,10 +75,7 @@ func (r *Replicator) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Setup creates the publication and replication slot on the source.
-// Returns the exported snapshot name and consistent LSN.
 func (r *Replicator) Setup(ctx context.Context) (snapshotName string, consistentLSN pglogrepl.LSN, err error) {
-	// Check if publication already exists.
 	var pubExists bool
 	err = r.sourceConn.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM pg_publication WHERE pubname = $1)",
@@ -108,7 +95,6 @@ func (r *Replicator) Setup(ctx context.Context) (snapshotName string, consistent
 		}
 	}
 
-	// Check if slot already exists.
 	var slotExists bool
 	err = r.sourceConn.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
@@ -118,7 +104,6 @@ func (r *Replicator) Setup(ctx context.Context) (snapshotName string, consistent
 	}
 
 	if slotExists {
-		// Reuse existing slot — get its confirmed LSN.
 		var lsnStr *string
 		err = r.sourceConn.QueryRow(ctx,
 			"SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
@@ -135,7 +120,6 @@ func (r *Replicator) Setup(ctx context.Context) (snapshotName string, consistent
 		return r.checkpoint.SnapshotName, consistentLSN, nil
 	}
 
-	// Create new replication slot.
 	result, err := pglogrepl.CreateReplicationSlot(ctx, r.replConn,
 		r.config.SlotName, "pgoutput",
 		pglogrepl.CreateReplicationSlotOptions{
@@ -154,7 +138,6 @@ func (r *Replicator) Setup(ctx context.Context) (snapshotName string, consistent
 	return result.SnapshotName, consistentLSN, nil
 }
 
-// StartStreaming begins the WAL streaming loop. It blocks until context is cancelled.
 func (r *Replicator) StartStreaming(ctx context.Context) error {
 	var startLSN pglogrepl.LSN
 	if r.checkpoint.ConfirmedLSN != "" {
@@ -189,7 +172,6 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 
 	for {
 		if ctx.Err() != nil {
-			// Acknowledge final LSN before exiting.
 			if lastReceivedLSN > 0 {
 				_ = r.acknowledge(ctx, lastReceivedLSN)
 			}
@@ -236,7 +218,7 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 					return fmt.Errorf("failed to parse keepalive: %w", err)
 				}
 				if pkm.ReplyRequested {
-					standbyDeadline = time.Time{} // force immediate reply
+					standbyDeadline = time.Time{}
 				}
 
 			case pglogrepl.XLogDataByteID:
@@ -255,7 +237,6 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 			}
 
 		default:
-			// Ignore other message types.
 		}
 	}
 }
@@ -275,7 +256,6 @@ func (r *Replicator) handleWALData(ctx context.Context, xld pglogrepl.XLogData) 
 		}
 
 	case *pglogrepl.BeginMessage:
-		// Start a transaction on the target.
 		_, err := r.targetConn.Exec(ctx, "BEGIN")
 		if err != nil {
 			return fmt.Errorf("failed to begin target tx: %w", err)
@@ -317,7 +297,6 @@ func (r *Replicator) handleWALData(ctx context.Context, xld pglogrepl.XLogData) 
 			return fmt.Errorf("failed to commit target tx: %w", err)
 		}
 
-		// Send streaming update to TUI.
 		r.trySend(StreamingUpdateMsg{
 			LSN:     pglogrepl.LSN(m.CommitLSN).String(),
 			Inserts: r.inserts,
@@ -374,7 +353,6 @@ func (r *Replicator) applyUpdate(ctx context.Context, rel *RelationInfo, msg *pg
 		return nil
 	}
 
-	// Find key columns for the WHERE clause.
 	keyCols, keyVals := findKeyValues(rel, msg)
 
 	setClauses := make([]string, len(colNames))
@@ -405,7 +383,6 @@ func (r *Replicator) applyUpdate(ctx context.Context, rel *RelationInfo, msg *pg
 }
 
 func (r *Replicator) applyDelete(ctx context.Context, rel *RelationInfo, msg *pglogrepl.DeleteMessage) error {
-	// Use OldTuple for delete key identification.
 	var tuple *pglogrepl.TupleData
 	if msg.OldTuple != nil {
 		tuple = msg.OldTuple
@@ -445,12 +422,10 @@ func (r *Replicator) acknowledge(ctx context.Context, lsn pglogrepl.LSN) error {
 	)
 }
 
-// Cleanup drops the replication slot and publication on the source.
 func (r *Replicator) Cleanup(ctx context.Context) error {
 	var errs []string
 
 	if r.sourceConn != nil {
-		// Drop slot.
 		if err := pglogrepl.DropReplicationSlot(ctx, r.replConn,
 			r.config.SlotName,
 			pglogrepl.DropReplicationSlotOptions{Wait: true},
@@ -458,7 +433,6 @@ func (r *Replicator) Cleanup(ctx context.Context) error {
 			errs = append(errs, fmt.Sprintf("drop slot: %v", err))
 		}
 
-		// Drop publication.
 		if _, err := r.sourceConn.Exec(ctx,
 			fmt.Sprintf("DROP PUBLICATION IF EXISTS %s",
 				pgx.Identifier{r.config.PublicationName}.Sanitize())); err != nil {
@@ -472,7 +446,6 @@ func (r *Replicator) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// Close closes all connections.
 func (r *Replicator) Close() error {
 	ctx := context.Background()
 	var errs []string
@@ -506,7 +479,6 @@ func (r *Replicator) trySend(msg any) {
 	}
 }
 
-// makeColumns extracts column info from a RelationMessage.
 func makeColumns(msg *pglogrepl.RelationMessage) []ColumnInfo {
 	cols := make([]ColumnInfo, len(msg.Columns))
 	for i, c := range msg.Columns {
@@ -519,7 +491,6 @@ func makeColumns(msg *pglogrepl.RelationMessage) []ColumnInfo {
 	return cols
 }
 
-// decodeTupleData extracts column names and text values from a TupleData.
 func decodeTupleData(rel *RelationInfo, tuple *pglogrepl.TupleData) ([]string, []any) {
 	if tuple == nil {
 		return nil, nil
@@ -534,13 +505,13 @@ func decodeTupleData(rel *RelationInfo, tuple *pglogrepl.TupleData) ([]string, [
 		}
 
 		switch col.DataType {
-		case 'n': // null
+		case 'n':
 			colNames = append(colNames, rel.Columns[i].Name)
 			values = append(values, nil)
-		case 't': // text
+		case 't':
 			colNames = append(colNames, rel.Columns[i].Name)
 			values = append(values, string(col.Data))
-		case 'u': // unchanged toast — skip
+		case 'u':
 			continue
 		}
 	}
@@ -548,7 +519,6 @@ func decodeTupleData(rel *RelationInfo, tuple *pglogrepl.TupleData) ([]string, [
 	return colNames, values
 }
 
-// decodeTupleDataForKeys extracts only key column values from a TupleData.
 func decodeTupleDataForKeys(rel *RelationInfo, tuple *pglogrepl.TupleData) ([]string, []any) {
 	if tuple == nil {
 		return nil, nil
@@ -561,7 +531,9 @@ func decodeTupleDataForKeys(rel *RelationInfo, tuple *pglogrepl.TupleData) ([]st
 		if i >= len(rel.Columns) {
 			break
 		}
-		// Include all columns present in old tuple for delete identification.
+		if !rel.Columns[i].IsKey {
+			continue
+		}
 		switch col.DataType {
 		case 't':
 			keyCols = append(keyCols, rel.Columns[i].Name)
@@ -575,14 +547,11 @@ func decodeTupleDataForKeys(rel *RelationInfo, tuple *pglogrepl.TupleData) ([]st
 	return keyCols, keyVals
 }
 
-// findKeyValues extracts key values for an UPDATE's WHERE clause.
-// Uses OldTuple if available (REPLICA IDENTITY FULL), otherwise uses key columns from NewTuple.
 func findKeyValues(rel *RelationInfo, msg *pglogrepl.UpdateMessage) ([]string, []any) {
 	if msg.OldTuple != nil {
 		return decodeTupleDataForKeys(rel, msg.OldTuple)
 	}
 
-	// Fall back to key columns from the new tuple.
 	var keyCols []string
 	var keyVals []any
 	if msg.NewTuple != nil {

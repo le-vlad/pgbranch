@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ValidateSource checks that the source PostgreSQL instance is configured for logical replication.
 func ValidateSource(ctx context.Context, conn *pgx.Conn) error {
 	var walLevel string
 	if err := conn.QueryRow(ctx, "SHOW wal_level").Scan(&walLevel); err != nil {
@@ -42,7 +41,6 @@ func ValidateSource(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-// ValidateTarget checks that the target PostgreSQL instance is accessible.
 func ValidateTarget(ctx context.Context, conn *pgx.Conn) error {
 	if err := conn.Ping(ctx); err != nil {
 		return fmt.Errorf("failed to connect to target: %w", err)
@@ -50,8 +48,6 @@ func ValidateTarget(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-// ResolveTables resolves the table list. If tables contains "*", it queries all user tables.
-// Otherwise it validates that each specified table exists on the source.
 func ResolveTables(ctx context.Context, conn *pgx.Conn, tables []string) ([]string, error) {
 	if len(tables) == 1 && tables[0] == "*" {
 		return queryAllTables(ctx, conn)
@@ -105,7 +101,6 @@ func queryAllTables(ctx context.Context, conn *pgx.Conn) ([]string, error) {
 	return tables, rows.Err()
 }
 
-// parseTableName splits "schema.table" into schema and table. Defaults to "public" if no schema.
 func parseTableName(fullName string) (schema, table string) {
 	parts := strings.SplitN(fullName, ".", 2)
 	if len(parts) == 2 {

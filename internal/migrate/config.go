@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"fmt"
@@ -9,12 +9,11 @@ import (
 )
 
 const (
-	defaultSlotName        = "grace_slot"
-	defaultPublicationName = "grace_pub"
+	defaultSlotName        = "migrate_slot"
+	defaultPublicationName = "migrate_pub"
 	defaultBatchSize       = 10000
 )
 
-// Config represents the YAML configuration for a grace migration.
 type Config struct {
 	Source          DBConfig `yaml:"source"`
 	Target          DBConfig `yaml:"target"`
@@ -23,11 +22,9 @@ type Config struct {
 	PublicationName string   `yaml:"publication_name"`
 	BatchSize       int      `yaml:"batch_size"`
 
-	// configPath is the directory where the config file lives (for checkpoint storage).
 	configDir string
 }
 
-// DBConfig holds connection parameters for a PostgreSQL instance.
 type DBConfig struct {
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
@@ -37,7 +34,6 @@ type DBConfig struct {
 	SSLMode  string `yaml:"sslmode"`
 }
 
-// LoadConfig reads and parses a YAML configuration file.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -88,7 +84,6 @@ func (c *Config) setDefaults() {
 	}
 }
 
-// Validate checks that all required fields are present.
 func (c *Config) Validate() error {
 	if err := c.Source.validate("source"); err != nil {
 		return err
@@ -115,7 +110,6 @@ func (d *DBConfig) validate(label string) error {
 	return nil
 }
 
-// ConnectionURL returns a PostgreSQL connection URL.
 func (d *DBConfig) ConnectionURL() string {
 	if d.Password != "" {
 		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
@@ -125,7 +119,6 @@ func (d *DBConfig) ConnectionURL() string {
 		d.User, d.Host, d.Port, d.Database, d.SSLMode)
 }
 
-// ReplicationURL returns a connection URL with the replication=database parameter.
 func (d *DBConfig) ReplicationURL() string {
 	if d.Password != "" {
 		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s&replication=database",
@@ -135,7 +128,6 @@ func (d *DBConfig) ReplicationURL() string {
 		d.User, d.Host, d.Port, d.Database, d.SSLMode)
 }
 
-// CheckpointPath returns the path for the checkpoint file.
 func (c *Config) CheckpointPath() string {
 	return filepath.Join(c.configDir, c.SlotName+".checkpoint.json")
 }
