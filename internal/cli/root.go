@@ -49,5 +49,5 @@ func init() {
 	rootCmd.AddCommand(newPushCmd())
 	rootCmd.AddCommand(newPullCmd())
 	rootCmd.AddCommand(newKeysCmd())
-	rootCmd.AddCommand(newGraceCmd())
+	rootCmd.AddCommand(newMigrateCmd())
 }

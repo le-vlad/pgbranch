@@ -168,6 +168,8 @@ func (e *Extractor) extractColumns(ctx context.Context, schemaName, tableName st
 			col.IsArray = true
 			col.ElementType = strings.TrimPrefix(udtName, "_")
 			col.DataType = col.ElementType
+		} else if dataType == "USER-DEFINED" {
+			col.DataType = udtName
 		}
 
 		columns = append(columns, col)
@@ -241,6 +243,9 @@ func (e *Extractor) extractConstraints(ctx context.Context, schemaName, tableNam
 				WHEN 'u' THEN 'UNIQUE'
 				WHEN 'c' THEN 'CHECK'
 				WHEN 'x' THEN 'EXCLUDE'
+				WHEN 'n' THEN 'NOT NULL'
+				WHEN 't' THEN 'TRIGGER'
+				ELSE 'UNKNOWN'
 			END AS constraint_type,
 			pg_get_constraintdef(con.oid) AS definition,
 			ARRAY(

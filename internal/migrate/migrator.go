@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"context"
@@ -10,16 +10,14 @@ import (
 	"os"
 )
 
-// RunMode controls how far the migration proceeds.
 type RunMode int
 
 const (
-	RunFull         RunMode = iota // schema + snapshot + streaming
-	RunSchemaOnly                  // schema copy only
-	RunSnapshotOnly                // schema + snapshot, no streaming
+	RunFull         RunMode = iota
+	RunSchemaOnly
+	RunSnapshotOnly
 )
 
-// Migrator orchestrates the full grace migration pipeline.
 type Migrator struct {
 	config     *Config
 	tables     []string
@@ -30,7 +28,6 @@ type Migrator struct {
 	sendCh     chan any
 }
 
-// NewMigrator creates a new migration orchestrator.
 func NewMigrator(cfg *Config, keepSlot bool, mode RunMode) *Migrator {
 	return &Migrator{
 		config:   cfg,
@@ -40,7 +37,6 @@ func NewMigrator(cfg *Config, keepSlot bool, mode RunMode) *Migrator {
 	}
 }
 
-// Run executes the migration. It blocks until complete or context is cancelled.
 func (m *Migrator) Run(ctx context.Context) error {
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
 
@@ -54,13 +50,11 @@ func (m *Migrator) runWithTUI(ctx context.Context) error {
 	model := NewModel()
 	program := tea.NewProgram(model, tea.WithAltScreen())
 
-	// Run migration in background, send messages to TUI.
 	go func() {
 		err := m.executeMigration(ctx)
 		program.Send(MigrationDoneMsg{Err: err})
 	}()
 
-	// Forward messages from migration goroutine to TUI.
 	go func() {
 		for msg := range m.sendCh {
 			program.Send(msg)
@@ -82,7 +76,6 @@ func (m *Migrator) runWithTUI(ctx context.Context) error {
 func (m *Migrator) runWithPlainLog(ctx context.Context) error {
 	logger := NewPlainLogger()
 
-	// Forward messages from migration goroutine to plain logger.
 	go func() {
 		for msg := range m.sendCh {
 			switch msg := msg.(type) {
@@ -91,7 +84,6 @@ func (m *Migrator) runWithPlainLog(ctx context.Context) error {
 			case TableInitMsg:
 				logger.TableInit(msg.Table, msg.TotalRows)
 			case TableProgressMsg:
-				// Batch progress — only log periodically.
 			case TableDoneMsg:
 				logger.TableDone(msg.Table)
 			case StreamingUpdateMsg:
@@ -106,7 +98,6 @@ func (m *Migrator) runWithPlainLog(ctx context.Context) error {
 func (m *Migrator) executeMigration(ctx context.Context) error {
 	defer close(m.sendCh)
 
-	// Load or create checkpoint.
 	cp, err := LoadCheckpoint(m.config.CheckpointPath())
 	if err != nil {
 		return fmt.Errorf("failed to load checkpoint: %w", err)
@@ -115,7 +106,6 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 	cp.SlotName = m.config.SlotName
 	cp.PublicationName = m.config.PublicationName
 
-	// Phase 0: Validate.
 	m.send(PhaseMsg{Phase: "validate"})
 
 	sourceConn, err := pgx.Connect(ctx, m.config.Source.ConnectionURL())
@@ -138,7 +128,6 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 		return fmt.Errorf("target validation failed: %w", err)
 	}
 
-	// Resolve tables.
 	tables, err := ResolveTables(ctx, sourceConn, m.config.Tables)
 	if err != nil {
 		return err
@@ -146,11 +135,9 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 	m.tables = tables
 	cp.InitTables(tables)
 
-	// Close validation connections — replicator creates its own.
 	sourceConn.Close(ctx)
 	targetConn.Close(ctx)
 
-	// Phase 1: Schema copy (if not already done).
 	if !cp.SchemaApplied {
 		m.send(PhaseMsg{Phase: "schema"})
 
@@ -181,14 +168,12 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 		return nil
 	}
 
-	// Create replicator and connect.
 	m.replicator = NewReplicator(m.config, tables, cp, m.sendCh)
 	if err := m.replicator.Connect(ctx); err != nil {
 		return err
 	}
 	defer m.cleanup(ctx)
 
-	// Phase 2: Setup replication.
 	m.send(PhaseMsg{Phase: "setup"})
 
 	snapshotName, consistentLSN, err := m.replicator.Setup(ctx)
@@ -200,7 +185,6 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 	cp.ConsistentLSN = consistentLSN.String()
 	_ = cp.Save()
 
-	// Phase 3: Initial snapshot (if not complete).
 	if !cp.IsSnapshotComplete() {
 		m.send(PhaseMsg{Phase: "snapshot"})
 		cp.Phase = "snapshot"
@@ -215,14 +199,12 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 		return nil
 	}
 
-	// Phase 4: WAL streaming.
 	m.send(PhaseMsg{Phase: "streaming"})
 	cp.Phase = "streaming"
 	_ = cp.Save()
 
 	if err := m.replicator.StartStreaming(ctx); err != nil {
 		if ctx.Err() != nil {
-			// Graceful shutdown — context was cancelled.
 			return nil
 		}
 		return fmt.Errorf("streaming failed: %w", err)

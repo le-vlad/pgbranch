@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"os"

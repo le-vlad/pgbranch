@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"encoding/json"
@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// TableStatus represents the replication status of a single table.
 type TableStatus string
 
 const (
@@ -16,7 +15,6 @@ const (
 	TableComplete   TableStatus = "complete"
 )
 
-// Checkpoint tracks migration progress for resume support.
 type Checkpoint struct {
 	SlotName        string                    `json:"slot_name"`
 	PublicationName string                    `json:"publication_name"`
@@ -31,14 +29,12 @@ type Checkpoint struct {
 	path string
 }
 
-// TableProgress tracks replication progress for a single table.
 type TableProgress struct {
 	Status     TableStatus `json:"status"`
 	RowsCopied int64       `json:"rows_copied"`
 	TotalRows  int64       `json:"total_rows,omitempty"`
 }
 
-// LoadCheckpoint loads checkpoint from disk, or returns a new empty one if it doesn't exist.
 func LoadCheckpoint(path string) (*Checkpoint, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -65,7 +61,6 @@ func LoadCheckpoint(path string) (*Checkpoint, error) {
 	return &cp, nil
 }
 
-// Save persists the checkpoint to disk.
 func (c *Checkpoint) Save() error {
 	c.UpdatedAt = time.Now()
 
@@ -81,7 +76,6 @@ func (c *Checkpoint) Save() error {
 	return nil
 }
 
-// Delete removes the checkpoint file from disk.
 func (c *Checkpoint) Delete() error {
 	if err := os.Remove(c.path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete checkpoint: %w", err)
@@ -89,7 +83,6 @@ func (c *Checkpoint) Delete() error {
 	return nil
 }
 
-// IsSnapshotComplete returns true if all tables have completed their initial snapshot.
 func (c *Checkpoint) IsSnapshotComplete() bool {
 	if len(c.Tables) == 0 {
 		return false
@@ -102,7 +95,6 @@ func (c *Checkpoint) IsSnapshotComplete() bool {
 	return true
 }
 
-// InitTables sets up table progress tracking for the given tables.
 func (c *Checkpoint) InitTables(tables []string) {
 	for _, t := range tables {
 		if _, exists := c.Tables[t]; !exists {

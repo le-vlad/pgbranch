@@ -22,7 +22,7 @@ Git branching for your PostgreSQL database.
 - [Commands](#commands)
 - [Schema Diff](#schema-diff)
 - [Schema Merge](#schema-merge) *(Beta)*
-- [Grace Migration](#grace-migration)
+- [Continuous Migration](#continuous-migration)
 - [Automatic Branch Switching](#automatic-branch-switching)
 - [Remotes](#remotes)
 - [Caveats](#caveats)
@@ -108,7 +108,7 @@ pgbranch hook install          Install git hook for auto-switching
 pgbranch hook uninstall        Remove the git hook
 pgbranch diff <branch1> [branch2]  Compare schemas between branches
 pgbranch merge <source> <target>   Merge schema changes (Beta)
-pgbranch grace -c <config.yaml>    Migrate database via logical replication
+pgbranch migrate -c <config.yaml>  Migrate database via logical replication
 ```
 
 ### Init Options
@@ -215,22 +215,22 @@ The generated file includes:
 - All DDL statements in correct dependency order
 - Comments for destructive operations
 
-## Grace Migration
+## Continuous Migration
 
-Gracefully migrate a PostgreSQL database to another instance using logical replication. Grace copies schema, performs an initial data snapshot, then streams live changes -- all with table-by-table progress.
+Continuously migrate a PostgreSQL database to another instance using logical replication. Copies schema, performs an initial data snapshot, then streams live changes -- all with table-by-table progress.
 
 ```bash
 # Full migration (schema + snapshot + live streaming)
-pgbranch grace -c migration.yaml
+pgbranch migrate -c migration.yaml
 
 # Copy schema only
-pgbranch grace -c migration.yaml --schema-only
+pgbranch migrate -c migration.yaml --schema-only
 
 # Copy schema + initial data, then stop (no live streaming)
-pgbranch grace -c migration.yaml --snapshot-only
+pgbranch migrate -c migration.yaml --snapshot-only
 
 # Keep replication slot on exit for later resume
-pgbranch grace -c migration.yaml --keep
+pgbranch migrate -c migration.yaml --keep
 ```
 
 ### Configuration
@@ -261,8 +261,8 @@ tables:
   - public.products
 
 # Optional settings
-slot_name: grace_slot              # replication slot name (default: grace_slot)
-publication_name: grace_pub        # publication name (default: grace_pub)
+slot_name: migrate_slot            # replication slot name (default: migrate_slot)
+publication_name: migrate_pub      # publication name (default: migrate_pub)
 batch_size: 10000                  # rows per batch during snapshot (default: 10000)
 ```
 
@@ -284,11 +284,11 @@ batch_size: 10000                  # rows per batch during snapshot (default: 10
 
 ### Resume Support
 
-If interrupted, grace saves a checkpoint file alongside your config. Re-running the same command skips completed tables and resumes WAL streaming from the last confirmed position. Use `--keep` to preserve the replication slot across runs.
+If interrupted, a checkpoint file is saved alongside your config. Re-running the same command skips completed tables and resumes WAL streaming from the last confirmed position. Use `--keep` to preserve the replication slot across runs.
 
 ### Progress Display
 
-Grace shows a rich TUI with per-table progress bars during the snapshot phase and live counters (inserts, updates, deletes, ops/sec) during streaming. Falls back to periodic log lines in non-TTY environments.
+Shows a rich TUI with per-table progress bars during the snapshot phase and live counters (inserts, updates, deletes, ops/sec) during streaming. Falls back to periodic log lines in non-TTY environments.
 
 ## Requirements
 

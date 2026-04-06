@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"context"
@@ -9,26 +9,20 @@ import (
 	"github.com/le-vlad/pgbranch/internal/schema"
 )
 
-// CopySchema extracts DDL from the source database and applies it to the target.
-// It reuses the existing internal/schema package for extraction, changeset building,
-// and ordered application.
 func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []string, sourceDB string) error {
 	extracted, err := schema.ExtractFromConnection(ctx, sourceConn, sourceDB)
 	if err != nil {
 		return fmt.Errorf("failed to extract schema from source: %w", err)
 	}
 
-	// Build a set of requested tables for filtering.
 	requested := buildTableSet(tables)
 
-	// Step 1: Create sequences first (needed for SERIAL/BIGSERIAL columns).
 	if err := createSequences(ctx, sourceConn, targetConn, extracted, requested); err != nil {
 		return fmt.Errorf("failed to create sequences: %w", err)
 	}
 
 	cs := schema.NewChangeSet()
 
-	// Add enums that are used by the requested tables.
 	usedEnums := findUsedEnums(extracted, requested)
 	for _, enum := range extracted.SortedEnums() {
 		if usedEnums[enum.FullName()] {
@@ -36,12 +30,8 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 		}
 	}
 
-	// Collect FK constraints to add after all PKs/tables are created.
 	var fkConstraints []schema.Change
 
-	// Add tables with their columns.
-	// We strip all non-PK constraints from the table clone because generateCreateTable
-	// includes them inline, which can fail if referenced tables don't exist yet.
 	for _, table := range extracted.SortedTables() {
 		if !isTableRequested(table, requested) {
 			continue
@@ -50,8 +40,6 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 		tableForCreate := cloneTableWithoutNonPKConstraints(table)
 		cs.Add(&schema.CreateTableChange{Table: tableForCreate})
 
-		// Add indexes that are NOT backing a constraint (PK, UNIQUE).
-		// Constraint-backing indexes are created automatically by AddConstraintChange.
 		constraintNames := make(map[string]bool)
 		for _, con := range table.Constraints {
 			constraintNames[con.Name] = true
@@ -63,9 +51,12 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 			cs.Add(&schema.CreateIndexChange{Index: idx})
 		}
 
-		// Add PK and UNIQUE/CHECK constraints immediately.
-		// Defer FK constraints to a later pass (after all tables + PKs exist).
 		for _, con := range table.SortedConstraints() {
+			if con.Type == schema.ConstraintNotNull ||
+				con.Type == schema.ConstraintTrigger ||
+				con.Type == schema.ConstraintUnknown {
+				continue
+			}
 			if con.Type == schema.ConstraintForeignKey {
 				if con.RefTable != "" && !isRefTableRequested(con.RefTable, table.Schema, requested) {
 					continue
@@ -83,7 +74,6 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 		}
 	}
 
-	// Add functions.
 	for _, fn := range extracted.SortedFunctions() {
 		cs.Add(&schema.CreateFunctionChange{Function: fn})
 	}
@@ -92,7 +82,6 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 		return fmt.Errorf("no schema objects found for the requested tables")
 	}
 
-	// Apply main schema (tables, PKs, indexes, enums, functions) first.
 	ordered := schema.OrderChanges(cs)
 	applier := schema.NewApplier(targetConn)
 
@@ -102,7 +91,6 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 			len(result.Applied), failedDescription(result), err)
 	}
 
-	// Apply FK constraints in a second pass (all referenced tables + PKs now exist).
 	if len(fkConstraints) > 0 {
 		fkSet := schema.NewChangeSet()
 		for _, fk := range fkConstraints {
@@ -115,7 +103,6 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 		}
 	}
 
-	// Step 3: Set sequence ownership to link sequences to their columns.
 	if err := setSequenceOwnership(ctx, sourceConn, targetConn, extracted, requested); err != nil {
 		return fmt.Errorf("failed to set sequence ownership: %w", err)
 	}
@@ -123,8 +110,6 @@ func CopySchema(ctx context.Context, sourceConn, targetConn *pgx.Conn, tables []
 	return nil
 }
 
-// createSequences queries sequences from the source that are used by the requested tables
-// and creates them on the target before tables are created.
 func createSequences(ctx context.Context, sourceConn, targetConn *pgx.Conn, s *schema.Schema, requested map[string]bool) error {
 	rows, err := sourceConn.Query(ctx, `
 		SELECT
@@ -138,17 +123,14 @@ func createSequences(ctx context.Context, sourceConn, targetConn *pgx.Conn, s *s
 		ORDER BY n.nspname, c.relname
 	`)
 	if err != nil {
-		// pg_get_serial_sequence_definition may not exist — fall back to simpler approach.
 		return createSequencesFallback(ctx, sourceConn, targetConn, s, requested)
 	}
 	defer rows.Close()
 
-	// If the query worked but returned nothing useful, just use fallback.
 	rows.Close()
 	return createSequencesFallback(ctx, sourceConn, targetConn, s, requested)
 }
 
-// createSequencesFallback creates sequences by querying pg_class and pg_sequences.
 func createSequencesFallback(ctx context.Context, sourceConn, targetConn *pgx.Conn, s *schema.Schema, requested map[string]bool) error {
 	rows, err := sourceConn.Query(ctx, `
 		SELECT
@@ -179,8 +161,6 @@ func createSequencesFallback(ctx context.Context, sourceConn, targetConn *pgx.Co
 			return fmt.Errorf("failed to scan sequence: %w", err)
 		}
 
-		// Check if this sequence is used by any of the requested tables.
-		// Sequences for SERIAL columns follow the pattern: tablename_colname_seq
 		used := false
 		for _, table := range s.Tables {
 			if !isTableRequested(table, requested) {
@@ -220,7 +200,6 @@ func createSequencesFallback(ctx context.Context, sourceConn, targetConn *pgx.Co
 	return rows.Err()
 }
 
-// setSequenceOwnership sets OWNED BY on sequences to link them to their table columns.
 func setSequenceOwnership(ctx context.Context, sourceConn, targetConn *pgx.Conn, s *schema.Schema, requested map[string]bool) error {
 	rows, err := sourceConn.Query(ctx, `
 		SELECT
@@ -269,8 +248,6 @@ func setSequenceOwnership(ctx context.Context, sourceConn, targetConn *pgx.Conn,
 	return nil
 }
 
-// buildTableSet creates a lookup set from the table list.
-// Handles both "schema.table" and bare "table" (defaults to public).
 func buildTableSet(tables []string) map[string]bool {
 	set := make(map[string]bool, len(tables))
 	for _, t := range tables {
@@ -292,7 +269,6 @@ func isRefTableRequested(refTable, currentSchema string, requested map[string]bo
 	return requested[currentSchema+"."+refTable]
 }
 
-// findUsedEnums scans columns of requested tables for enum types.
 func findUsedEnums(s *schema.Schema, requested map[string]bool) map[string]bool {
 	enumNames := make(map[string]bool)
 	for _, enum := range s.Enums {
@@ -310,7 +286,6 @@ func findUsedEnums(s *schema.Schema, requested map[string]bool) map[string]bool 
 				dt = strings.ToLower(col.ElementType)
 			}
 			if enumNames[dt] {
-				// Find the enum's full name.
 				for _, enum := range s.Enums {
 					if enum.Name == dt {
 						used[enum.FullName()] = true
@@ -323,14 +298,11 @@ func findUsedEnums(s *schema.Schema, requested map[string]bool) map[string]bool 
 	return used
 }
 
-// cloneTableWithoutNonPKConstraints creates a shallow copy of the table with only PK constraints.
-// This ensures generateCreateTable doesn't emit inline ALTER TABLE for FKs/UNIQUE/CHECK.
 func cloneTableWithoutNonPKConstraints(table *schema.Table) *schema.Table {
 	clone := schema.NewTable(table.Name, table.Schema)
 	clone.Columns = table.Columns
 	clone.Indexes = table.Indexes
 
-	// Only keep PRIMARY KEY constraints.
 	for name, con := range table.Constraints {
 		if con.Type == schema.ConstraintPrimaryKey {
 			clone.Constraints[name] = con

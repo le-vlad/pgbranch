@@ -6,11 +6,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/le-vlad/pgbranch/internal/grace"
+	"github.com/le-vlad/pgbranch/internal/migrate"
 	"github.com/spf13/cobra"
 )
 
-func newGraceCmd() *cobra.Command {
+func newMigrateCmd() *cobra.Command {
 	var (
 		configPath   string
 		keepSlot     bool
@@ -19,20 +19,20 @@ func newGraceCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "grace",
-		Short: "Graceful PG-to-PG database migration via logical replication",
+		Use:   "migrate",
+		Short: "Continuous PG-to-PG database migration via logical replication",
 		Long: `Migrate a PostgreSQL database to another PostgreSQL instance using logical replication.
 
-Grace reads a YAML configuration file describing source and target databases,
+Reads a YAML configuration file describing source and target databases,
 then performs: schema copy → initial data snapshot → live WAL streaming.
 
 The migration shows table-by-table progress and supports resume on interruption.
 
 Example:
-  pgbranch grace -c migration.yaml
-  pgbranch grace -c migration.yaml --schema-only
-  pgbranch grace -c migration.yaml --snapshot-only
-  pgbranch grace -c migration.yaml --keep
+  pgbranch migrate -c migration.yaml
+  pgbranch migrate -c migration.yaml --schema-only
+  pgbranch migrate -c migration.yaml --snapshot-only
+  pgbranch migrate -c migration.yaml --keep
 
 Requirements:
   - Source PostgreSQL must have wal_level=logical
@@ -43,22 +43,22 @@ Requirements:
 				return fmt.Errorf("--config flag is required")
 			}
 
-			cfg, err := grace.LoadConfig(configPath)
+			cfg, err := migrate.LoadConfig(configPath)
 			if err != nil {
 				return err
 			}
 
-			mode := grace.RunFull
+			mode := migrate.RunFull
 			if schemaOnly {
-				mode = grace.RunSchemaOnly
+				mode = migrate.RunSchemaOnly
 			} else if snapshotOnly {
-				mode = grace.RunSnapshotOnly
+				mode = migrate.RunSnapshotOnly
 			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			migrator := grace.NewMigrator(cfg, keepSlot, mode)
+			migrator := migrate.NewMigrator(cfg, keepSlot, mode)
 			return migrator.Run(ctx)
 		},
 	}

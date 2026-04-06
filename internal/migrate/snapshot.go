@@ -1,4 +1,4 @@
-package grace
+package migrate
 
 import (
 	"bytes"
@@ -9,10 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RunSnapshot performs the initial consistent data copy using the exported snapshot.
-// It copies each table using the COPY protocol for maximum throughput.
 func (r *Replicator) RunSnapshot(ctx context.Context, snapshotName string) error {
-	// Open a transaction on the source with the exported snapshot for consistency.
+	ordered, err := r.sortTablesByFK(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to resolve table copy order: %w", err)
+	}
+
 	tx, err := r.sourceConn.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead,
 	})
@@ -27,16 +29,14 @@ func (r *Replicator) RunSnapshot(ctx context.Context, snapshotName string) error
 		}
 	}
 
-	for _, table := range r.tables {
+	for _, table := range ordered {
 		tp := r.checkpoint.Tables[table]
 
-		// Skip already completed tables (resume support).
 		if tp != nil && tp.Status == TableComplete {
 			r.trySend(TableDoneMsg{Table: table})
 			continue
 		}
 
-		// Count total rows for progress tracking.
 		schemaName, tableName := parseTableName(table)
 		var totalRows int64
 		err := tx.QueryRow(ctx,
@@ -47,7 +47,6 @@ func (r *Replicator) RunSnapshot(ctx context.Context, snapshotName string) error
 			return fmt.Errorf("failed to count rows in %s: %w", table, err)
 		}
 
-		// Update checkpoint.
 		if tp == nil {
 			tp = &TableProgress{}
 			r.checkpoint.Tables[table] = tp
@@ -77,13 +76,94 @@ func (r *Replicator) RunSnapshot(ctx context.Context, snapshotName string) error
 	return nil
 }
 
-// copyTable copies a single table from source to target using the COPY protocol.
-// pgconn.CopyTo(ctx, w io.Writer, sql string) writes COPY data to a writer.
-// pgconn.CopyFrom(ctx, r io.Reader, sql string) reads COPY data from a reader.
+func (r *Replicator) sortTablesByFK(ctx context.Context) ([]string, error) {
+	tableSet := make(map[string]bool, len(r.tables))
+	for _, t := range r.tables {
+		tableSet[t] = true
+	}
+
+	rows, err := r.sourceConn.Query(ctx, `
+		SELECT
+			cn.nspname || '.' || cc.relname AS child_table,
+			pn.nspname || '.' || pc.relname AS parent_table
+		FROM pg_constraint con
+		JOIN pg_class cc ON cc.oid = con.conrelid
+		JOIN pg_namespace cn ON cn.oid = cc.relnamespace
+		JOIN pg_class pc ON pc.oid = con.confrelid
+		JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+		WHERE con.contype = 'f'
+		  AND cn.nspname NOT IN ('pg_catalog', 'information_schema')
+	`)
+	if err != nil {
+		return r.tables, nil
+	}
+	defer rows.Close()
+
+	deps := make(map[string][]string)
+	for rows.Next() {
+		var child, parent string
+		if err := rows.Scan(&child, &parent); err != nil {
+			return r.tables, nil
+		}
+		if tableSet[child] && tableSet[parent] && child != parent {
+			deps[child] = append(deps[child], parent)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return r.tables, nil
+	}
+
+	inDegree := make(map[string]int, len(r.tables))
+	outEdges := make(map[string][]string)
+	for _, t := range r.tables {
+		inDegree[t] = 0
+	}
+	for child, parents := range deps {
+		for _, parent := range parents {
+			outEdges[parent] = append(outEdges[parent], child)
+			inDegree[child]++
+		}
+	}
+
+	var queue []string
+	for _, t := range r.tables {
+		if inDegree[t] == 0 {
+			queue = append(queue, t)
+		}
+	}
+
+	var ordered []string
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		ordered = append(ordered, node)
+
+		for _, child := range outEdges[node] {
+			inDegree[child]--
+			if inDegree[child] == 0 {
+				queue = append(queue, child)
+			}
+		}
+	}
+
+	if len(ordered) < len(r.tables) {
+		seen := make(map[string]bool, len(ordered))
+		for _, t := range ordered {
+			seen[t] = true
+		}
+		for _, t := range r.tables {
+			if !seen[t] {
+				ordered = append(ordered, t)
+			}
+		}
+	}
+
+	return ordered, nil
+}
+
 func (r *Replicator) copyTable(ctx context.Context, tx pgx.Tx, schemaName, tableName, fullTable string, tp *TableProgress) error {
 	qualifiedName := pgx.Identifier{schemaName, tableName}.Sanitize()
 
-	// Get column list from source.
 	columns, err := getTableColumns(ctx, tx, schemaName, tableName)
 	if err != nil {
 		return fmt.Errorf("failed to get columns: %w", err)
@@ -91,7 +171,6 @@ func (r *Replicator) copyTable(ctx context.Context, tx pgx.Tx, schemaName, table
 
 	colList := strings.Join(columns, ", ")
 
-	// Read from source using COPY TO STDOUT into a buffer.
 	copyOutSQL := fmt.Sprintf("COPY %s (%s) TO STDOUT WITH (FORMAT text)", qualifiedName, colList)
 
 	var buf bytes.Buffer
@@ -105,7 +184,6 @@ func (r *Replicator) copyTable(ctx context.Context, tx pgx.Tx, schemaName, table
 		return nil
 	}
 
-	// Count rows in the buffer for progress.
 	data := buf.Bytes()
 	rowCount := int64(0)
 	for _, b := range data {
@@ -116,7 +194,6 @@ func (r *Replicator) copyTable(ctx context.Context, tx pgx.Tx, schemaName, table
 	tp.RowsCopied = rowCount
 	r.trySend(TableProgressMsg{Table: fullTable, RowsDelta: rowCount})
 
-	// Write to target using COPY FROM STDIN.
 	copyInSQL := fmt.Sprintf("COPY %s (%s) FROM STDIN WITH (FORMAT text)", qualifiedName, colList)
 
 	tgtPgConn := r.targetConn.PgConn()
@@ -130,7 +207,6 @@ func (r *Replicator) copyTable(ctx context.Context, tx pgx.Tx, schemaName, table
 	return nil
 }
 
-// getTableColumns returns the ordered list of column names for a table.
 func getTableColumns(ctx context.Context, conn interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, schemaName, tableName string) ([]string, error) {
