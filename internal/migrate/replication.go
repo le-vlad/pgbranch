@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,24 +24,25 @@ func (r *RelationInfo) FullName() string {
 }
 
 type ColumnInfo struct {
-	Name   string
-	IsKey  bool
+	Name    string
+	IsKey   bool
 	TypeOID uint32
 }
 
 type Replicator struct {
-	replConn    *pgconn.PgConn
-	sourceConn  *pgx.Conn
-	targetConn  *pgx.Conn
-	config      *Config
-	tables      []string
-	relations   map[uint32]*RelationInfo
-	checkpoint  *Checkpoint
-	sendCh      chan any
+	replConn   *pgconn.PgConn
+	sourceConn *pgx.Conn
+	targetConn *pgx.Conn
+	config     *Config
+	tables     []string
+	relations  map[uint32]*RelationInfo
+	checkpoint *Checkpoint
+	sendCh     chan any
 
 	inserts int64
 	updates int64
 	deletes int64
+	inTx    bool // whether the target connection is inside a transaction
 }
 
 func NewReplicator(cfg *Config, tables []string, checkpoint *Checkpoint, sendCh chan any) *Replicator {
@@ -72,6 +74,23 @@ func (r *Replicator) Connect(ctx context.Context) error {
 	}
 	r.replConn = replConn
 
+	return nil
+}
+
+// connectFreshReplConn opens a new replication connection, closing the old one.
+// This is needed because after CreateReplicationSlot the connection protocol
+// state can be dirty on some providers.
+func (r *Replicator) connectFreshReplConn(ctx context.Context) error {
+	if r.replConn != nil {
+		_ = r.replConn.Close(ctx)
+		r.replConn = nil
+	}
+
+	conn, err := pgconn.Connect(ctx, r.config.Source.ReplicationURL())
+	if err != nil {
+		return fmt.Errorf("failed to create replication connection: %w", err)
+	}
+	r.replConn = conn
 	return nil
 }
 
@@ -138,7 +157,61 @@ func (r *Replicator) Setup(ctx context.Context) (snapshotName string, consistent
 	return result.SnapshotName, consistentLSN, nil
 }
 
+// StartStreaming begins the WAL streaming loop with automatic reconnection.
+// It blocks until context is cancelled.
 func (r *Replicator) StartStreaming(ctx context.Context) error {
+	const maxRetries = 10
+	retries := 0
+
+	for {
+		err := r.streamOnce(ctx)
+		if err == nil || ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		retries++
+		if retries > maxRetries {
+			return fmt.Errorf("streaming failed after %d retries: %w", maxRetries, err)
+		}
+
+		// Classify the error — only retry on connection/transient errors.
+		if !isTransientError(err) {
+			return err
+		}
+
+		r.trySend(PhaseMsg{Phase: fmt.Sprintf("reconnecting (attempt %d/%d)", retries, maxRetries)})
+
+		// Rollback any in-flight target transaction.
+		r.rollbackTarget(ctx)
+
+		// Wait before reconnecting with exponential backoff (1s, 2s, 4s, ... capped at 30s).
+		delay := time.Duration(1<<uint(retries-1)) * time.Second
+		if delay > 30*time.Second {
+			delay = 30 * time.Second
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+
+		// Reconnect replication connection.
+		if err := r.connectFreshReplConn(ctx); err != nil {
+			continue // will retry
+		}
+
+		r.trySend(PhaseMsg{Phase: "streaming"})
+	}
+}
+
+// streamOnce runs a single streaming session. Returns nil only on graceful shutdown.
+func (r *Replicator) streamOnce(ctx context.Context) error {
+	// Always open a fresh replication connection for streaming.
+	if err := r.connectFreshReplConn(ctx); err != nil {
+		return err
+	}
+
 	var startLSN pglogrepl.LSN
 	if r.checkpoint.ConfirmedLSN != "" {
 		var err error
@@ -175,7 +248,7 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 			if lastReceivedLSN > 0 {
 				_ = r.acknowledge(ctx, lastReceivedLSN)
 			}
-			return ctx.Err()
+			return nil // graceful shutdown
 		}
 
 		if time.Now().After(standbyDeadline) {
@@ -204,9 +277,9 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 				continue
 			}
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return nil // graceful shutdown
 			}
-			return fmt.Errorf("replication error: %w", err)
+			return fmt.Errorf("receive message failed: %w", err)
 		}
 
 		switch msg := rawMsg.(type) {
@@ -218,7 +291,7 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 					return fmt.Errorf("failed to parse keepalive: %w", err)
 				}
 				if pkm.ReplyRequested {
-					standbyDeadline = time.Time{}
+					standbyDeadline = time.Time{} // force immediate reply
 				}
 
 			case pglogrepl.XLogDataByteID:
@@ -228,6 +301,8 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 				}
 
 				if err := r.handleWALData(ctx, xld); err != nil {
+					// If it's a target-side error, rollback and log but don't kill streaming.
+					r.rollbackTarget(ctx)
 					return fmt.Errorf("failed to handle WAL data: %w", err)
 				}
 
@@ -236,7 +311,11 @@ func (r *Replicator) StartStreaming(ctx context.Context) error {
 				}
 			}
 
+		case *pgproto3.ErrorResponse:
+			return fmt.Errorf("server error: %s (SQLSTATE %s)", msg.Message, msg.Code)
+
 		default:
+			// Ignore unknown message types.
 		}
 	}
 }
@@ -260,6 +339,7 @@ func (r *Replicator) handleWALData(ctx context.Context, xld pglogrepl.XLogData) 
 		if err != nil {
 			return fmt.Errorf("failed to begin target tx: %w", err)
 		}
+		r.inTx = true
 
 	case *pglogrepl.InsertMessage:
 		rel, ok := r.relations[m.RelationID]
@@ -296,6 +376,7 @@ func (r *Replicator) handleWALData(ctx context.Context, xld pglogrepl.XLogData) 
 		if err != nil {
 			return fmt.Errorf("failed to commit target tx: %w", err)
 		}
+		r.inTx = false
 
 		r.trySend(StreamingUpdateMsg{
 			LSN:     pglogrepl.LSN(m.CommitLSN).String(),
@@ -316,9 +397,20 @@ func (r *Replicator) handleWALData(ctx context.Context, xld pglogrepl.XLogData) 
 				return fmt.Errorf("failed to truncate %s: %w", rel.FullName(), err)
 			}
 		}
+
+	// Silently ignore message types we don't act on (TypeMessage, OriginMessage, etc.)
+	default:
 	}
 
 	return nil
+}
+
+// rollbackTarget issues a ROLLBACK on the target if we're mid-transaction.
+func (r *Replicator) rollbackTarget(ctx context.Context) {
+	if r.inTx {
+		_, _ = r.targetConn.Exec(ctx, "ROLLBACK")
+		r.inTx = false
+	}
 }
 
 func (r *Replicator) applyInsert(ctx context.Context, rel *RelationInfo, msg *pglogrepl.InsertMessage) error {
@@ -425,14 +517,16 @@ func (r *Replicator) acknowledge(ctx context.Context, lsn pglogrepl.LSN) error {
 func (r *Replicator) Cleanup(ctx context.Context) error {
 	var errs []string
 
-	if r.sourceConn != nil {
+	if r.replConn != nil {
 		if err := pglogrepl.DropReplicationSlot(ctx, r.replConn,
 			r.config.SlotName,
 			pglogrepl.DropReplicationSlotOptions{Wait: true},
 		); err != nil {
 			errs = append(errs, fmt.Sprintf("drop slot: %v", err))
 		}
+	}
 
+	if r.sourceConn != nil {
 		if _, err := r.sourceConn.Exec(ctx,
 			fmt.Sprintf("DROP PUBLICATION IF EXISTS %s",
 				pgx.Identifier{r.config.PublicationName}.Sanitize())); err != nil {
@@ -479,12 +573,44 @@ func (r *Replicator) trySend(msg any) {
 	}
 }
 
+// isTransientError returns true for connection/network errors that are worth retrying.
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	s := err.Error()
+
+	// pgconn connection-level errors.
+	if strings.Contains(s, "server conn crashed") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "receive message failed") {
+		return true
+	}
+
+	// SQLSTATE-based classification.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code[:2] {
+		case "08": // connection_exception family
+			return true
+		case "57": // operator_intervention (restart, crash recovery)
+			return true
+		}
+	}
+
+	return false
+}
+
 func makeColumns(msg *pglogrepl.RelationMessage) []ColumnInfo {
 	cols := make([]ColumnInfo, len(msg.Columns))
 	for i, c := range msg.Columns {
 		cols[i] = ColumnInfo{
 			Name:    c.Name,
-			IsKey:   c.Flags == 1, // 1 = part of replica identity
+			IsKey:   c.Flags == 1,
 			TypeOID: c.DataType,
 		}
 	}
