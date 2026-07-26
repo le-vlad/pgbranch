@@ -35,6 +35,25 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	green := color.New(color.FgGreen).SprintFunc()
 	cyan := color.New(color.FgCyan).SprintFunc()
+	dim := color.New(color.Faint).SprintFunc()
+
+	state, err := brancher.Inspect()
+	if err != nil {
+		return err
+	}
+
+	// In a linked worktree the branch is fixed by git and the database is the
+	// branch's own, so reporting the configured database would be misleading.
+	if state.IsLinked {
+		fmt.Printf("Worktree: %s\n", cyan(state.WorktreeAt))
+		fmt.Printf("Database: %s\n", cyan(state.Database))
+		fmt.Printf("Host:     %s:%d\n", cfg.Host, cfg.Port)
+		fmt.Println()
+		fmt.Printf("On branch: %s %s\n", green(state.Branch), dim("(pinned by git)"))
+		fmt.Printf("Main database %s is untouched by this worktree.\n", dim(state.MainDB))
+		fmt.Printf("Branches:  %d\n", branchCount)
+		return nil
+	}
 
 	fmt.Printf("Database: %s\n", cyan(cfg.Database))
 	fmt.Printf("Host:     %s:%d\n", cfg.Host, cfg.Port)

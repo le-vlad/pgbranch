@@ -24,6 +24,8 @@ Git branching for your PostgreSQL database.
 - [Schema Merge](#schema-merge) *(Beta)*
 - [Continuous Migration](#continuous-migration)
 - [Automatic Branch Switching](#automatic-branch-switching)
+- [Git Worktrees](#git-worktrees)
+- [Claude Code](#claude-code)
 - [Remotes](#remotes)
 - [Caveats](#caveats)
 
@@ -104,8 +106,12 @@ pgbranch checkout <name>       Switch to a branch
 pgbranch delete <name>         Delete a branch
 pgbranch status                Show current branch and info
 pgbranch log                   Show all branches with details
+pgbranch env                   Print this worktree's database connection
+pgbranch prune                 Reclaim stale and departed-worktree databases
 pgbranch hook install          Install git hook for auto-switching
 pgbranch hook uninstall        Remove the git hook
+pgbranch claude install        Install the Claude Code integration
+pgbranch claude uninstall      Remove the Claude Code integration
 pgbranch diff <branch1> [branch2]  Compare schemas between branches
 pgbranch merge <source> <target>   Merge schema changes (Beta)
 pgbranch migrate -c <config.yaml>  Migrate database via logical replication
@@ -297,9 +303,11 @@ Shows a rich TUI with per-table progress bars during the snapshot phase and live
 
 ## What It Actually Creates
 
-When you run `pgbranch branch feature-x` on a database called `myapp_dev`, it creates a new database called `myapp_dev_pgbranch_feature_x`. That's your snapshot.
+When you run `pgbranch branch feature-x` on a database called `myapp_dev`, it creates a new database called `myapp_dev_pgbranch_feature_x_c791eb`. That's your snapshot. The trailing digest keeps `feature-x`, `feature/x` and `feature.x` apart, and keeps long branch names from colliding once PostgreSQL truncates identifiers at 63 bytes.
 
 Your working database stays as `myapp_dev`. When you checkout, it gets replaced with a copy of the snapshot.
+
+In a [linked worktree](#git-worktrees) there is no copy: the worktree uses `myapp_dev_pgbranch_feature_x_c791eb` directly, so your main database is never disturbed.
 
 ## Automatic Branch Switching
 
@@ -316,6 +324,101 @@ To remove the hook:
 ```bash
 pgbranch hook uninstall
 ```
+
+The hook is installed where git actually reads hooks from, so it is shared by
+every worktree of the repository and it respects `core.hooksPath` if you use
+husky or lefthook.
+
+## Git Worktrees
+
+Worktrees exist so you can have several branches checked out at once. A single
+working database cannot represent that, so pgbranch splits the difference:
+
+- **The main worktree** keeps using your configured database, exactly as before.
+  Your `DATABASE_URL` never changes.
+- **Each linked worktree** uses its branch's own database directly. Creating a
+  worktree never touches your main database, and a migration run in one worktree
+  is invisible to the others.
+
+```bash
+pgbranch hook install
+git worktree add ../feature-x -b feature-x
+# ✓ pgbranch: created database 'myapp_pgbranch_feature_x_c791eb' for this
+#   worktree (main database 'myapp' untouched)
+```
+
+This is safe because git already refuses to check one branch out in two
+worktrees, so a branch's database always has exactly one writer. pgbranch
+enforces the same rule for its own commands: `checkout`, `delete`, and `update`
+refuse to touch a branch another worktree is holding.
+
+### Pointing your app at the right database
+
+Ask pgbranch, don't guess:
+
+```bash
+eval $(pgbranch env)                          # export into this shell
+export DATABASE_URL=$(pgbranch env --url)     # just the URL
+pgbranch env --json                           # machine readable
+```
+
+pgbranch also writes `.pgbranch/env` inside each worktree. It never edits your
+`.env` — a fresh worktree does not have one, since `.env` is gitignored, and
+rewriting a DSN in place risks mangling credentials and query parameters.
+
+With direnv, add to `.envrc`:
+
+```bash
+dotenv_if_exists .pgbranch/env
+```
+
+### Cleaning up
+
+Removing a worktree leaks nothing: its database is simply that branch's
+database, and it is still there when you come back. Databases created
+automatically for agent worktrees are disposable and reclaimed by:
+
+```bash
+pgbranch prune
+```
+
+## Claude Code
+
+Running `claude --worktree` on a Postgres project is more dangerous than it
+looks. The worktree is a clean checkout, so there is no `.env` in it, and the
+app falls back to its default connection string — which is your main
+development database. The agent runs a migration and your dev server is looking
+at the wreckage.
+
+```bash
+pgbranch hook install
+pgbranch claude install
+```
+
+Now every Claude worktree gets its own database, and Claude is told about it at
+session start:
+
+```
+pgbranch created database "myapp_pgbranch_worktree_agent1_508c60" for this
+worktree. Your main database "myapp" is untouched.
+```
+
+Claude can run destructive migrations, drop tables, and test rollbacks without
+touching your database. If the work is worth keeping it lives on that branch's
+database and survives the worktree being removed.
+
+`pgbranch claude install` writes two things into your repo, and merges rather
+than overwrites, so your existing settings and hooks survive:
+
+- a `SessionStart` hook in `.claude/settings.json`, which tells Claude which
+  database it owns
+- a `pgbranch` skill in `.claude/skills/`, so Claude can rediscover the
+  connection string later in a long session
+
+Provisioning is done by the git `post-checkout` hook, which Claude's worktree
+creation already triggers. pgbranch deliberately does **not** register a
+`WorktreeCreate` hook: that hook *replaces* Claude Code's worktree creation
+rather than observing it.
 
 ## Remotes
 
@@ -401,6 +504,8 @@ Then set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in your environment.
 - Checkout will **drop your working database**. Uncommitted changes are gone.
 - Snapshots are full database copies. They take disk space.
 - Active connections to the database will be terminated on checkout.
+- `pgbranch checkout` does not work inside a linked worktree, by design: git already pins it to one branch, and that branch owns its database. Use `git checkout`.
+- PostgreSQL cannot copy a database that has open connections, so `pgbranch branch <name>` — which copies your live working database — closes them first. Your dev server will reconnect. Creating a *worktree* does not have this problem: it copies the parent branch's database, which nothing is connected to.
 
 ## Star History
 

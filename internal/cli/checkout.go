@@ -61,6 +61,11 @@ func runCheckout(cmd *cobra.Command, args []string) error {
 
 	name := args[0]
 
+	// Fail before announcing a switch that cannot happen.
+	if err := brancher.EnsureCheckoutAllowed(name); err != nil {
+		return err
+	}
+
 	if autoCreateBranch {
 		if brancher.Metadata.BranchExists(name) {
 			return fmt.Errorf("fatal: a branch named '%s' already exists", name)
