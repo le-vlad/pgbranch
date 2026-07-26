@@ -41,9 +41,40 @@ func init() {
 	pruneCmd.Flags().BoolVarP(&pruneForce, "force", "y", false, "Skip interactive mode and prune all stale branches")
 }
 
+// pruneOrphanedAgentBranches reclaims databases created for agent worktrees
+// that no longer exist.
+//
+// Nothing announces a worktree's removal: `git worktree remove` fires no hook,
+// and Claude Code's WorktreeRemove hook does not fire when a session ends. So
+// these databases are found by comparing metadata against `git worktree list`.
+// They are disposable by construction, so no confirmation is asked for.
+func pruneOrphanedAgentBranches(brancher *core.Brancher) error {
+	orphans, err := brancher.OrphanedAgentBranches()
+	if err != nil || len(orphans) == 0 {
+		return err
+	}
+
+	dim := color.New(color.Faint).SprintFunc()
+	green := color.New(color.FgGreen).SprintFunc()
+
+	for _, name := range orphans {
+		if err := brancher.DeleteBranch(name, true); err != nil {
+			warn("could not remove database for departed worktree '%s': %v", name, err)
+			continue
+		}
+		fmt.Printf("%s Removed database for departed worktree %s\n", green("✓"), dim(name))
+	}
+	fmt.Println()
+	return nil
+}
+
 func runPrune(cmd *cobra.Command, args []string) error {
 	brancher, err := core.NewBrancher()
 	if err != nil {
+		return err
+	}
+
+	if err := pruneOrphanedAgentBranches(brancher); err != nil {
 		return err
 	}
 

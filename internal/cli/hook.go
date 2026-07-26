@@ -1,59 +1,38 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/le-vlad/pgbranch/internal/core"
+	"github.com/le-vlad/pgbranch/internal/gitrepo"
+	"github.com/le-vlad/pgbranch/pkg/config"
 )
 
+// hookMarker identifies a hook as pgbranch's, across versions. Byte-comparing
+// the whole script made every change to it an unremovable "foreign hook".
+const hookMarker = "pgbranch-managed-hook"
+
+// postCheckoutHook delegates to the binary rather than reimplementing pgbranch
+// in shell. The previous version grepped `pgbranch branch` output to decide what
+// to do, and checked for a .pgbranch directory that never exists in a worktree.
 const postCheckoutHook = `#!/bin/sh
-# pgbranch post-checkout hook
-# Automatically switches database branch when git branch changes
+# ` + hookMarker + `: switches the database branch when the git branch changes.
+# Remove with: pgbranch hook uninstall
 
-# post-checkout receives: previous HEAD, new HEAD, flag (1=branch checkout, 0=file checkout)
-PREV_HEAD="$1"
-NEW_HEAD="$2"
-CHECKOUT_TYPE="$3"
+# Args: previous HEAD, new HEAD, 1 for a branch checkout and 0 for a file checkout.
+[ "$3" = "1" ] || exit 0
 
-# Only run on branch checkouts, not file checkouts
-if [ "$CHECKOUT_TYPE" != "1" ]; then
-    exit 0
-fi
+# Do not break checkouts on machines without pgbranch installed.
+command -v pgbranch >/dev/null 2>&1 || exit 0
 
-# Get the new branch name
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-
-# Skip if we're in detached HEAD state
-if [ "$BRANCH" = "HEAD" ]; then
-    exit 0
-fi
-
-# Check if pgbranch is initialized in this directory
-if [ ! -d ".pgbranch" ]; then
-    exit 0
-fi
-
-# Check if this branch exists in pgbranch
-if pgbranch branch 2>/dev/null | grep -q "^[* ] $BRANCH$"; then
-    # Branch exists, checkout if not already current
-    if ! pgbranch branch 2>/dev/null | grep -q "^\* $BRANCH$"; then
-        if pgbranch checkout "$BRANCH" 2>/dev/null; then
-            echo "pgbranch: Switched database to branch '$BRANCH'"
-        fi
-    fi
-else
-    # Branch doesn't exist, create it then checkout
-    if pgbranch branch "$BRANCH" 2>/dev/null; then
-        echo "pgbranch: Created database branch '$BRANCH'"
-        if pgbranch checkout "$BRANCH" 2>/dev/null; then
-            echo "pgbranch: Switched database to branch '$BRANCH'"
-        fi
-    fi
-fi
+exec pgbranch hook post-checkout "$1" "$2" "$3"
 `
 
 var hookCmd = &cobra.Command{
@@ -61,6 +40,10 @@ var hookCmd = &cobra.Command{
 	Short: "Manage git hooks for automatic branch switching",
 	Long: `Manage git hooks that automatically switch database branches
 when you switch git branches.
+
+The hook is shared by every worktree of the repository, and understands both:
+in the main worktree it switches the working database, and in a linked worktree
+it provisions that worktree its own database, leaving the main one untouched.
 
 Subcommands:
   install   - Install the post-checkout git hook
@@ -70,15 +53,16 @@ Subcommands:
 var hookInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install git hook for automatic branch switching",
-	Long: `Install a post-checkout git hook that automatically runs
-'pgbranch checkout <branch>' when you switch git branches.
+	Long: `Install a post-checkout git hook that keeps the database in step
+with the git branch.
 
-This allows seamless synchronization between your git branches
-and database states.
+The hook is written to the directory git actually reads hooks from, which is
+shared across worktrees and honours core.hooksPath.
 
 Example:
   pgbranch hook install
-  git checkout feature-x  # automatically runs: pgbranch checkout feature-x`,
+  git checkout feature-x            # switches the database to feature-x
+  git worktree add ../wt -b feat-y  # gives ../wt its own database`,
 	RunE: runHookInstall,
 }
 
@@ -92,29 +76,26 @@ Example:
 	RunE: runHookUninstall,
 }
 
+// postCheckoutCmd is what the installed hook script invokes. Keeping the logic
+// in Go means the hook can be a stable four-line stub.
+var postCheckoutCmd = &cobra.Command{
+	Use:    "post-checkout <prev-head> <new-head> <flag>",
+	Short:  "Internal: run the post-checkout logic",
+	Args:   cobra.MaximumNArgs(3),
+	Hidden: true,
+	RunE:   runPostCheckout,
+}
+
 func init() {
 	hookCmd.AddCommand(hookInstallCmd)
 	hookCmd.AddCommand(hookUninstallCmd)
-}
-
-func getGitHooksDir() (string, error) {
-	// Find the git directory
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("not a git repository")
-	}
-
-	gitDir := string(output[:len(output)-1])
-	hooksDir := filepath.Join(gitDir, "hooks")
-
-	return hooksDir, nil
+	hookCmd.AddCommand(postCheckoutCmd)
 }
 
 func runHookInstall(cmd *cobra.Command, args []string) error {
-	hooksDir, err := getGitHooksDir()
+	hooksDir, err := gitrepo.HooksDir()
 	if err != nil {
-		return err
+		return fmt.Errorf("not a git repository")
 	}
 
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
@@ -123,22 +104,26 @@ func runHookInstall(cmd *cobra.Command, args []string) error {
 
 	hookPath := filepath.Join(hooksDir, "post-checkout")
 
-	if _, err := os.Stat(hookPath); err == nil {
-		content, err := os.ReadFile(hookPath)
-		if err != nil {
-			return fmt.Errorf("failed to read existing hook: %w", err)
-		}
-
-		if string(content) == postCheckoutHook {
+	if existing, err := os.ReadFile(hookPath); err == nil {
+		switch {
+		case string(existing) == postCheckoutHook:
 			fmt.Println("pgbranch hook is already installed")
 			return nil
+		case strings.Contains(string(existing), hookMarker):
+			// An older pgbranch hook. Upgrading is safe and expected.
+			if err := os.WriteFile(hookPath, []byte(postCheckoutHook), 0755); err != nil {
+				return fmt.Errorf("failed to upgrade hook: %w", err)
+			}
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s Upgraded the pgbranch hook at %s\n", green("✓"), hookPath)
+			return nil
+		default:
+			yellow := color.New(color.FgYellow).SprintFunc()
+			fmt.Printf("%s A post-checkout hook already exists.\n", yellow("!"))
+			fmt.Println("  To avoid conflicts, please manually integrate pgbranch into your existing hook:")
+			fmt.Println("    pgbranch hook post-checkout \"$1\" \"$2\" \"$3\"")
+			return fmt.Errorf("existing hook found at %s", hookPath)
 		}
-
-		yellow := color.New(color.FgYellow).SprintFunc()
-		fmt.Printf("%s A post-checkout hook already exists.\n", yellow("!"))
-		fmt.Println("  To avoid conflicts, please manually integrate pgbranch into your existing hook.")
-		fmt.Println("  Or backup and remove the existing hook, then run this command again.")
-		return fmt.Errorf("existing hook found at %s", hookPath)
 	}
 
 	if err := os.WriteFile(hookPath, []byte(postCheckoutHook), 0755); err != nil {
@@ -146,18 +131,18 @@ func runHookInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	green := color.New(color.FgGreen).SprintFunc()
-	fmt.Printf("%s Git hook installed successfully!\n", green("✓"))
+	fmt.Printf("%s Git hook installed at %s\n", green("✓"), hookPath)
 	fmt.Println()
-	fmt.Println("Now when you run 'git checkout <branch>', pgbranch will")
-	fmt.Println("automatically switch to the matching database branch if it exists.")
+	fmt.Println("Switching git branches now switches the database branch.")
+	fmt.Println("New worktrees get their own database; the main one is left alone.")
 
 	return nil
 }
 
 func runHookUninstall(cmd *cobra.Command, args []string) error {
-	hooksDir, err := getGitHooksDir()
+	hooksDir, err := gitrepo.HooksDir()
 	if err != nil {
-		return err
+		return fmt.Errorf("not a git repository")
 	}
 
 	hookPath := filepath.Join(hooksDir, "post-checkout")
@@ -171,7 +156,7 @@ func runHookUninstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read hook: %w", err)
 	}
 
-	if string(content) != postCheckoutHook {
+	if !strings.Contains(string(content), hookMarker) {
 		yellow := color.New(color.FgYellow).SprintFunc()
 		fmt.Printf("%s The post-checkout hook was not installed by pgbranch.\n", yellow("!"))
 		fmt.Println("  Refusing to remove it to avoid breaking your workflow.")
@@ -186,4 +171,105 @@ func runHookUninstall(cmd *cobra.Command, args []string) error {
 	fmt.Printf("%s Git hook uninstalled successfully\n", green("✓"))
 
 	return nil
+}
+
+// runPostCheckout must never fail a git checkout. Anything unexpected is
+// reported and swallowed: a database that did not switch is recoverable, a
+// checkout that refuses to complete is not.
+func runPostCheckout(cmd *cobra.Command, args []string) error {
+	cmd.SilenceUsage = true
+
+	if len(args) == 3 && args[2] != "1" {
+		return nil // file checkout, not a branch change
+	}
+	if !config.IsInitialized() {
+		return nil
+	}
+
+	ctx, err := gitrepo.Discover()
+	if err != nil || ctx.Branch == "" {
+		return nil // not a repository, or a detached HEAD
+	}
+
+	brancher, err := core.NewBrancher()
+	if err != nil {
+		return nil
+	}
+
+	if ctx.IsLinked {
+		return syncLinkedWorktree(brancher)
+	}
+	return syncMainWorktree(brancher, ctx.Branch)
+}
+
+// syncLinkedWorktree gives the worktree its own database, without disturbing
+// the main working database.
+func syncLinkedWorktree(brancher *core.Brancher) error {
+	state, err := brancher.EnsureWorktreeDatabase("")
+	if err != nil {
+		warn("could not prepare a database for this worktree: %v", err)
+		return nil
+	}
+
+	envPath, err := brancher.WriteEnvFile()
+	if err != nil {
+		warn("could not write the worktree env file: %v", err)
+		return nil
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	verb := "using"
+	if state.Created {
+		verb = "created"
+	}
+	fmt.Printf("%s pgbranch: %s database '%s' for this worktree (main database '%s' untouched)\n",
+		green("✓"), verb, state.Database, state.MainDB)
+	fmt.Printf("  connection string written to %s\n", relativeToCwd(envPath))
+	return nil
+}
+
+// syncMainWorktree preserves the original behaviour: the configured database is
+// swapped to match the branch, so DATABASE_URL never has to change.
+func syncMainWorktree(brancher *core.Brancher, branch string) error {
+	if brancher.CurrentBranch() == branch {
+		return nil
+	}
+
+	if !brancher.Metadata.BranchExists(branch) {
+		if err := brancher.CreateBranch(branch); err != nil {
+			warn("could not create database branch '%s': %v", branch, err)
+			return nil
+		}
+		fmt.Printf("pgbranch: created database branch '%s'\n", branch)
+	}
+
+	if err := brancher.Checkout(branch); err != nil {
+		var claimed *core.ErrBranchClaimed
+		if errors.As(err, &claimed) {
+			warn("branch '%s' is in use by the worktree at %s; database not switched",
+				claimed.Branch, claimed.Worktree)
+			return nil
+		}
+		warn("could not switch database to '%s': %v", branch, err)
+		return nil
+	}
+
+	fmt.Printf("pgbranch: switched database to branch '%s'\n", branch)
+	return nil
+}
+
+func warn(format string, args ...any) {
+	yellow := color.New(color.FgYellow).SprintFunc()
+	fmt.Fprintf(os.Stderr, "%s pgbranch: %s\n", yellow("!"), fmt.Sprintf(format, args...))
+}
+
+func relativeToCwd(path string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return path
+	}
+	if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return path
 }

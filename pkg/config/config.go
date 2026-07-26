@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/le-vlad/pgbranch/internal/gitrepo"
 )
 
 const (
@@ -57,13 +59,69 @@ func DefaultConfig() *Config {
 	}
 }
 
-// GetRootDir returns the absolute path to the pgbranch configuration directory.
-func GetRootDir() (string, error) {
+// EnvVarDir overrides the location of the pgbranch configuration directory.
+const EnvVarDir = "PGBRANCH_DIR"
+
+// InitRootDir returns where `pgbranch init` should create its directory:
+// always alongside the working directory, never somewhere inherited.
+func InitRootDir() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current directory: %w", err)
 	}
 	return filepath.Join(cwd, DirName), nil
+}
+
+// GetRootDir returns the pgbranch configuration directory in effect.
+//
+// Configuration is shared by every worktree of a repository, so a linked
+// worktree resolves to the same directory as the main worktree. Resolution
+// order:
+//
+//  1. $PGBRANCH_DIR, when set.
+//  2. The nearest ancestor of the working directory holding .pgbranch/config.json.
+//     This covers monorepos that initialise pgbranch in a subdirectory, and it
+//     covers worktrees nested inside the main worktree.
+//  3. The main worktree's root, for worktrees checked out beside the repository
+//     rather than inside it.
+//  4. <cwd>/.pgbranch, so that error messages name a plausible path.
+func GetRootDir() (string, error) {
+	if dir := os.Getenv(EnvVarDir); dir != "" {
+		return filepath.Clean(dir), nil
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	if root, ok := searchUp(cwd); ok {
+		return root, nil
+	}
+
+	if ctx, err := gitrepo.Discover(); err == nil && ctx.IsLinked {
+		if root, ok := searchUp(ctx.MainRoot); ok {
+			return root, nil
+		}
+	}
+
+	return filepath.Join(cwd, DirName), nil
+}
+
+// searchUp walks from dir toward the filesystem root looking for an
+// initialised pgbranch directory.
+func searchUp(dir string) (string, bool) {
+	for {
+		candidate := filepath.Join(dir, DirName)
+		if _, err := os.Stat(filepath.Join(candidate, ConfigFileName)); err == nil {
+			return candidate, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }
 
 // GetConfigPath returns the absolute path to the configuration file.
@@ -84,13 +142,16 @@ func GetSnapshotsDir() (string, error) {
 	return filepath.Join(rootDir, SnapshotsDir), nil
 }
 
-// IsInitialized returns true if pgbranch has been initialized in the current directory.
+// IsInitialized reports whether pgbranch has a usable configuration.
+//
+// This tests for config.json rather than the directory, because pgbranch also
+// writes .pgbranch/env into worktrees that were never initialised themselves.
 func IsInitialized() bool {
 	rootDir, err := GetRootDir()
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(rootDir)
+	_, err = os.Stat(filepath.Join(rootDir, ConfigFileName))
 	return err == nil
 }
 
@@ -114,19 +175,26 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes the configuration to the configuration file.
+// Save writes the configuration to the configuration directory in effect.
 func (c *Config) Save() error {
-	configPath, err := GetConfigPath()
+	rootDir, err := GetRootDir()
 	if err != nil {
 		return err
 	}
+	return c.SaveTo(rootDir)
+}
 
+// SaveTo writes the configuration into the given directory.
+//
+// `pgbranch init` needs this: until config.json exists, GetRootDir cannot see
+// the directory being created and would resolve to an ancestor's configuration.
+func (c *Config) SaveTo(rootDir string) error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to serialize config: %w", err)
 	}
 
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(rootDir, ConfigFileName), data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 

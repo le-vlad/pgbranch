@@ -21,6 +21,11 @@ type Branch struct {
 	LastCheckoutAt time.Time `json:"last_checkout_at,omitempty"`
 	Parent         string    `json:"parent,omitempty"`
 	Snapshot       string    `json:"snapshot"`
+
+	// Ephemeral marks a branch provisioned automatically for an agent
+	// worktree. Its database is disposable and prune reclaims it as soon as
+	// the worktree is gone, without waiting for the staleness threshold.
+	Ephemeral bool `json:"ephemeral,omitempty"`
 }
 
 // IsStale returns true if the branch hasn't been accessed in the specified
@@ -106,13 +111,43 @@ func (m *Metadata) Save() error {
 	if err != nil {
 		return err
 	}
+	return m.saveToPath(metadataPath)
+}
 
+// SaveTo writes metadata into the given pgbranch directory. See Config.SaveTo
+// for why `pgbranch init` cannot rely on path resolution.
+func (m *Metadata) SaveTo(rootDir string) error {
+	return m.saveToPath(filepath.Join(rootDir, MetadataFileName))
+}
+
+// saveToPath writes metadata via a temporary file and an atomic rename.
+//
+// Every worktree of a repository shares one metadata file, so concurrent
+// writers are now ordinary rather than exotic. A rename cannot interleave.
+func (m *Metadata) saveToPath(metadataPath string) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to serialize metadata: %w", err)
 	}
 
-	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(metadataPath), ".metadata-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to write metadata file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write metadata file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to write metadata file: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		return fmt.Errorf("failed to write metadata file: %w", err)
+	}
+	if err := os.Rename(tmpName, metadataPath); err != nil {
 		return fmt.Errorf("failed to write metadata file: %w", err)
 	}
 

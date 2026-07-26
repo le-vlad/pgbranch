@@ -47,7 +47,7 @@ func NewBrancher() (*Brancher, error) {
 // Initialize sets up pgbranch in the current directory with the given
 // database connection parameters.
 func Initialize(database, host string, port int, user, password string) error {
-	rootDir, err := config.GetRootDir()
+	rootDir, err := config.InitRootDir()
 	if err != nil {
 		return err
 	}
@@ -73,12 +73,12 @@ func Initialize(database, host string, port int, user, password string) error {
 		return err
 	}
 
-	if err := cfg.Save(); err != nil {
+	if err := cfg.SaveTo(rootDir); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
 	meta := storage.NewMetadata()
-	if err := meta.Save(); err != nil {
+	if err := meta.SaveTo(rootDir); err != nil {
 		return fmt.Errorf("failed to save metadata: %w", err)
 	}
 
@@ -113,9 +113,19 @@ func (b *Brancher) CreateBranch(name string) error {
 // with a copy of the branch's snapshot. The current branch state is saved
 // before switching.
 func (b *Brancher) Checkout(name string) error {
+	if err := b.ensureMainWorktree("checkout"); err != nil {
+		return err
+	}
+
 	branch, ok := b.Metadata.GetBranch(name)
 	if !ok {
 		return fmt.Errorf("branch '%s' does not exist", name)
+	}
+
+	// Restoring this branch would template from a database another worktree is
+	// connected to, terminating its connections and forking its state.
+	if err := b.ensureNotClaimed(name); err != nil {
+		return err
 	}
 
 	if b.Metadata.CurrentBranch != "" && b.Metadata.CurrentBranch != name {
@@ -153,6 +163,12 @@ func (b *Brancher) DeleteBranch(name string, force bool) error {
 	branch, ok := b.Metadata.GetBranch(name)
 	if !ok {
 		return fmt.Errorf("branch '%s' does not exist", name)
+	}
+
+	// Dropping this database would pull it out from under another worktree.
+	// --force overrides pgbranch's own current-branch check, not git's reality.
+	if err := b.ensureNotClaimed(name); err != nil {
+		return err
 	}
 
 	if err := b.Client.DeleteSnapshot(branch.Snapshot); err != nil {
@@ -216,6 +232,11 @@ func (b *Brancher) UpdateBranch(name string) error {
 	branch, ok := b.Metadata.GetBranch(name)
 	if !ok {
 		return fmt.Errorf("branch '%s' does not exist", name)
+	}
+
+	// Overwriting this database would discard work in the worktree using it.
+	if err := b.ensureNotClaimed(name); err != nil {
+		return err
 	}
 
 	snapshotDBName := branch.Snapshot

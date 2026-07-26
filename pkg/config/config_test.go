@@ -207,7 +207,49 @@ func TestIsInitialized(t *testing.T) {
 	err = os.MkdirAll(filepath.Join(tmpDir, DirName), 0755)
 	require.NoError(t, err)
 
+	// A bare directory is not an installation. pgbranch writes .pgbranch/env
+	// into worktrees that were never initialised, and treating that as
+	// initialised would make them load a configuration that does not exist.
+	assert.False(t, IsInitialized(), "directory without config.json must not count as initialized")
+
+	err = os.WriteFile(filepath.Join(tmpDir, DirName, ConfigFileName), []byte(`{"database":"x"}`), 0644)
+	require.NoError(t, err)
+
 	assert.True(t, IsInitialized())
+}
+
+// A worktree resolves to the configuration of the directory tree above it, so
+// that every worktree of a repository shares one set of branches.
+func TestGetRootDirFindsAncestorConfig(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pgbranch-ancestor-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+	tmpDir, err = filepath.EvalSymlinks(tmpDir)
+	require.NoError(t, err)
+
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer os.Chdir(originalDir)
+
+	root := filepath.Join(tmpDir, DirName)
+	require.NoError(t, os.MkdirAll(root, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ConfigFileName), []byte(`{"database":"x"}`), 0644))
+
+	nested := filepath.Join(tmpDir, "services", "api")
+	require.NoError(t, os.MkdirAll(nested, 0755))
+	require.NoError(t, os.Chdir(nested))
+
+	got, err := GetRootDir()
+	require.NoError(t, err)
+	assert.Equal(t, root, got)
+}
+
+func TestGetRootDirRespectsEnvOverride(t *testing.T) {
+	t.Setenv(EnvVarDir, "/custom/pgbranch")
+
+	got, err := GetRootDir()
+	require.NoError(t, err)
+	assert.Equal(t, "/custom/pgbranch", got)
 }
 
 func TestGetRootDir(t *testing.T) {

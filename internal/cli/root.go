@@ -7,8 +7,11 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "pgbranch",
-	Short: "Git-style branching for PostgreSQL databases",
+	Use: "pgbranch",
+	// A refused operation is not a usage mistake; printing the flag list after
+	// "branch is checked out in another worktree" buries the explanation.
+	SilenceUsage: true,
+	Short:        "Git-style branching for PostgreSQL databases",
 	Long: `pgbranch - A CLI tool for managing PostgreSQL database branches.
 
 Create, switch, and manage database snapshots just like git branches.
@@ -44,6 +47,8 @@ func init() {
 	rootCmd.AddCommand(hookCmd)
 	rootCmd.AddCommand(pruneCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(envCmd)
+	rootCmd.AddCommand(claudeCmd)
 
 	rootCmd.AddCommand(newRemoteCmd())
 	rootCmd.AddCommand(newPushCmd())
