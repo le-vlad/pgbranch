@@ -1,0 +1,6 @@
+.git
+.github
+.pgbranch
+pgbranch
+**/*_test.go
+LICENSE
