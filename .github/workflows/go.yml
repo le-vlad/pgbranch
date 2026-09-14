@@ -28,6 +28,15 @@ jobs:
       - name: Build
         run: go build -v ./cmd/pgbranch
 
+  docker-build:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build --tag pgbranch:test .
+
   test-unit:
     name: Unit Tests
     runs-on: ubuntu-latest
